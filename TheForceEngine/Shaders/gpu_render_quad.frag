@@ -1,9 +1,16 @@
 #include "Shaders/filter.h"
+#include "Shaders/bufferAccess.h"
 
+#ifdef TFE_BUFFER_TEXTURE_2D
+uniform highp sampler2D Colormap;
+uniform highp sampler2D Palette;
+uniform highp sampler2DArray Textures;
+#else
 uniform sampler2D Colormap;
 uniform sampler2D Palette;
 uniform sampler2DArray Textures;
-uniform isamplerBuffer TextureTable;
+#endif
+TFE_DECLARE_IBUFFER(TextureTable);
 
 in vec2 Frag_Uv;		// base uv coordinates (0 - 1)
 flat in vec4 Frag_TextureId_Color;
@@ -45,12 +52,11 @@ flat in vec4 Frag_TextureId_Color;
 
 	vec3 getAttenuatedColor(vec3 baseColor, float lightLevel)
 	{
-		vec3 color = baseColor;
 		if (lightLevel < 31.0)
 		{
-			color.rgb = generateColor(baseColor.rgb, lightLevel);
+			return generateColor(baseColor, lightLevel);
 		}
-		return color;
+		return baseColor;
 	}
 
 	vec2 scaleUv(vec2 uv, int data)
@@ -62,7 +68,7 @@ flat in vec4 Frag_TextureId_Color;
 
 	vec4 sampleTextureClamp(int id, vec2 uv)
 	{
-		ivec4 sampleData = texelFetch(TextureTable, id);
+		ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
 		ivec3 iuv;
 		uv = scaleUv(uv, sampleData.y);
 		iuv.xy = ivec2(uv);
@@ -92,7 +98,7 @@ flat in vec4 Frag_TextureId_Color;
 
 	float sampleTextureClamp(int id, vec2 uv)
 	{
-		ivec4 sampleData = texelFetch(TextureTable, id);
+		ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
 		ivec3 iuv;
 		iuv.xy = ivec2(uv);
 		iuv.z = 0;
@@ -165,7 +171,7 @@ void main()
 
 	// Get the final attenuated color.
 #ifdef OPT_TRUE_COLOR
-	Out_Color.rgb = mix(getAttenuatedColor(baseColor.rgb, lightLevel), baseColor.rgb, emissive);
+	Out_Color.rgb = mix(getAttenuatedColor(baseColor.rgb, float(lightLevel)), baseColor.rgb, emissive);
 	Out_Color.rgb = handlePaletteFx(Out_Color.rgb);
 #else
 	Out_Color.rgb = getAttenuatedColor(baseColor, lightLevel);

@@ -54,6 +54,7 @@ option(ENABLE_TFE "Enable building “The Force Engine”" ON)
 option(ENABLE_SYSMIDI "Enable System-MIDI Output if RTMidi is available" ON)
 option(ENABLE_EDITOR "Enable TFE Editor" OFF)
 option(ENABLE_ADJUSTABLEHUD_MOD "Install the build‑in “AdjustableHud mod” with TFE" ON)
+option(TFE_RUNTIME_GL "Runtime GLES3 / desktop GL selection (PortMaster)" OFF)
 
 if(ENABLE_TFE)
 	add_executable(tfe)
@@ -82,7 +83,37 @@ if(ENABLE_TFE)
 					Threads::Threads
 		)
 		
-		target_link_directories(tfe PRIVATE ${SDL2_LIBRARY_DIRS} ${SDL2_IMAGE_LIBRARY_DIRS})		
+		target_link_directories(tfe PRIVATE ${SDL2_LIBRARY_DIRS} ${SDL2_IMAGE_LIBRARY_DIRS})
+
+		if(TFE_RUNTIME_GL)
+			add_definitions(-DTFE_RUNTIME_GL)
+			# ImGui: GLAD proc table + GLES behavior (no direct GLES3/gl3.h link).
+			set_source_files_properties(
+				TheForceEngine/TFE_Ui/imGUI/imgui_impl_opengl3.cpp
+				PROPERTIES COMPILE_DEFINITIONS "IMGUI_IMPL_OPENGL_LOADER_CUSTOM;TFE_IMGUI_USE_GLES"
+			)
+			if(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+				# Cross-build: no glesv2.pc in the Docker/sysroot; link stubs like OpenJKDF2.
+				message(STATUS "TFE_RUNTIME_GL: aarch64 cross-build — GLES/EGL stubs")
+				include_directories(/usr/aarch64-linux-gnu/include /usr/include)
+				target_link_libraries(tfe PRIVATE
+					${CMAKE_SOURCE_DIR}/stubs_aarch64/libGLESv2.so
+					${CMAKE_SOURCE_DIR}/stubs_aarch64/libEGL.so
+				)
+				target_link_options(tfe PRIVATE
+					-Wl,--allow-shlib-undefined
+					-Wl,--unresolved-symbols=ignore-all
+					"-Wl,-rpath,\$ORIGIN/libs.aarch64"
+				)
+			else()
+				pkg_check_modules(GLESV2 REQUIRED glesv2)
+				pkg_check_modules(EGL REQUIRED egl)
+				target_link_libraries(tfe PRIVATE ${GLESV2_LIBRARIES} ${EGL_LIBRARIES})
+				if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+					add_definitions(-DTFE_RUNTIME_GL_DESKTOP)
+				endif()
+			endif()
+		endif()
 
 		# set up build directory to be able to run TFE immediately: symlink
 		# the necessary support file directories into the build env.

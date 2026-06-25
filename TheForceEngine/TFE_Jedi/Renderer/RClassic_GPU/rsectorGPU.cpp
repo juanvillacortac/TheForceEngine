@@ -16,6 +16,9 @@
 #include <TFE_Settings/settings.h>
 
 #include <TFE_RenderBackend/renderBackend.h>
+#if defined(TFE_RUNTIME_GL)
+#include <TFE_RenderBackend/Win32OpenGL/tfe_gles_ext.h>
+#endif
 #include <TFE_RenderBackend/vertexBuffer.h>
 #include <TFE_RenderBackend/indexBuffer.h>
 #include <TFE_RenderBackend/shader.h>
@@ -279,6 +282,10 @@ namespace TFE_Jedi
 	s32 getColormapWhiterampColor(s32 invLightLevel)
 	{
 		const u8 whitePoint = 32;
+		if (!s_colorMap)
+		{
+			return whitePoint;
+		}
 		const u8* level = &s_colorMap[(MAX_LIGHT_LEVEL - invLightLevel)<<8];
 		return level[whitePoint];
 	}
@@ -712,7 +719,13 @@ namespace TFE_Jedi
 		if (s_colorMap && s_lightSourceRamp)
 		{
 			u32 colormapData[256 * 32];
-			if (s_shaderSettings.colormapInterp || s_shaderSettings.trueColor)
+#if defined(TFE_RUNTIME_GL)
+			const bool smoothLightRamp = s_shaderSettings.colormapInterp || s_shaderSettings.trueColor
+				|| (tfe_UseBufferTexture2D() != 0);
+#else
+			const bool smoothLightRamp = s_shaderSettings.colormapInterp || s_shaderSettings.trueColor;
+#endif
+			if (smoothLightRamp)
 			{
 				f32 filter0[128];
 				f32 filter1[128];
@@ -772,7 +785,7 @@ namespace TFE_Jedi
 		}
 
 		// Build a color ramp for true-color...
-		if (s_shaderSettings.trueColor)
+		if (s_shaderSettings.trueColor && s_colorMap && s_lightSourceRamp)
 		{
 			generateTrueColorMapping();
 		}
@@ -788,6 +801,9 @@ namespace TFE_Jedi
 			s_shaderSettings.bloom != graphics->bloomEnabled ||
 			s_shaderSettings.colormapInterp != (graphics->colorMode == COLORMODE_8BIT_INTERP) ||
 			s_shaderSettings.trueColor != (graphics->colorMode == COLORMODE_TRUE_COLOR);
+		const bool colorModeChanged = !initialize &&
+			(s_shaderSettings.colormapInterp != (graphics->colorMode == COLORMODE_8BIT_INTERP) ||
+			 s_shaderSettings.trueColor != (graphics->colorMode == COLORMODE_TRUE_COLOR));
 		if (!needsUpdate) { return true; }
 
 		// Then update the settings.
@@ -800,9 +816,19 @@ namespace TFE_Jedi
 		// Update the color map based on interpolation or true color settings.
 		updateColorMap();
 
+		// Color mode affects atlas layout (8-bit vs RGBA) — repack HUD + level textures.
+		if (colorModeChanged)
+		{
+			s_forceTextureUpdate = true;
+			render_setResolution(true);
+		}
+
 		// Update the shaders.
 		bool result = updateShaders();
-		assert(result);
+		if (!result)
+		{
+			TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "Failed to load GPU shaders.");
+		}
 		return result;
 	}
 		
@@ -810,8 +836,16 @@ namespace TFE_Jedi
 	{
 		if (!m_gpuInit)
 		{
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Sector GPU prepare (first frame, %u disp items).", MAX_DISP_ITEMS);
 			TFE_COUNTER(s_wallSegGenerated, "Wall Segments");
-			
+
+			if (!updateShaderSettings(true))
+			{
+				renderer_fallbackToSoftware("GPU shader init failed.");
+				return;
+			}
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Sector shaders ready.");
+
 			m_gpuInit = true;
 			s_gpuFrame = 1;
 			if (!s_portalList)
@@ -819,11 +853,15 @@ namespace TFE_Jedi
 				s_portalList = (Portal*)malloc(sizeof(Portal) * MAX_DISP_ITEMS);
 			}
 
-			// Update the shaders
-			updateShaderSettings(true);
-
 			// Handles up to MAX_DISP_ITEMS sector quads in the view.
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Creating sector index buffer (%u indices).", 6u * MAX_DISP_ITEMS);
 			u32* indices = (u32*)level_alloc(sizeof(u32) * 6u * MAX_DISP_ITEMS);
+			if (!indices)
+			{
+				TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "Failed to allocate sector index buffer.");
+				renderer_fallbackToSoftware("GPU index buffer allocation failed.");
+				return;
+			}
 			u32* index = indices;
 			for (u32 q = 0; q < MAX_DISP_ITEMS; q++, index += 6u)
 			{
@@ -836,29 +874,59 @@ namespace TFE_Jedi
 				index[4] = i + 3;
 				index[5] = i + 2;
 			}
-			s_indexBuffer.create(6u * MAX_DISP_ITEMS, sizeof(u32), false, (void*)indices);
+			if (!s_indexBuffer.create(6u * MAX_DISP_ITEMS, sizeof(u32), false, (void*)indices))
+			{
+				TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "Failed to create sector index buffer.");
+				level_free(indices);
+				renderer_fallbackToSoftware("GPU index buffer creation failed.");
+				return;
+			}
 			level_free(indices);
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Sector index buffer ready.");
 
 			// Initialize the display list with the GPU buffers.
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Initializing sector display list (%u items).", MAX_DISP_ITEMS);
 			s32 posIndex[] = { 2, 2 };
 			s32 dataIndex[] = { 3, 3 };
-			sdisplayList_init(posIndex, dataIndex, 4);
+			if (!sdisplayList_init(posIndex, dataIndex, 4))
+			{
+				renderer_fallbackToSoftware("GPU sector display list init failed.");
+				return;
+			}
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Sector display list GPU buffers ready.");
 
 			// Sprite Shader and buffers...
 			sprdisplayList_init(0);
 			objectPortalPlanes_init();
-			model_init();
+			if (!model_init())
+			{
+				TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "3D model shader init failed (projectiles may be invisible).");
+			}
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Sector GPU prepare complete.");
 		}
 		if (!m_levelInit)
 		{
 			m_levelInit = true;
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Level GPU init starting.");
 
 			// Let's just cache the current data.
 			s_cachedSectors = (GPUCachedSector*)level_alloc(sizeof(GPUCachedSector) * s_levelState.sectorCount);
+			if (!s_cachedSectors)
+			{
+				TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "Failed to allocate cached sectors.");
+				renderer_fallbackToSoftware("GPU level memory allocation failed.");
+				return;
+			}
 			memset(s_cachedSectors, 0, sizeof(GPUCachedSector) * s_levelState.sectorCount);
 
 			s_gpuSourceData.sectorSize = sizeof(Vec4f) * s_levelState.sectorCount * 2;
 			s_gpuSourceData.sectors = (Vec4f*)level_alloc(s_gpuSourceData.sectorSize);
+			if (!s_gpuSourceData.sectors)
+			{
+				TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "Failed to allocate sector GPU source buffer.");
+				renderer_fallbackToSoftware("GPU level memory allocation failed.");
+				return;
+			}
 			memset(s_gpuSourceData.sectors, 0, s_gpuSourceData.sectorSize);
 
 			s32 wallCount = 0;
@@ -886,6 +954,12 @@ namespace TFE_Jedi
 
 			s_gpuSourceData.wallSize = sizeof(Vec4f) * wallCount * 3;
 			s_gpuSourceData.walls = (Vec4f*)level_alloc(s_gpuSourceData.wallSize);
+			if (!s_gpuSourceData.walls)
+			{
+				TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "Failed to allocate wall GPU source buffer.");
+				renderer_fallbackToSoftware("GPU level memory allocation failed.");
+				return;
+			}
 			memset(s_gpuSourceData.walls, 0, s_gpuSourceData.wallSize);
 
 			for (u32 s = 0; s < s_levelState.sectorCount; s++)
@@ -955,8 +1029,15 @@ namespace TFE_Jedi
 				}
 
 				const ShaderBufferDef bufferDefSectors = { 4, sizeof(f32), BUF_CHANNEL_FLOAT };
-				s_sectorGpuBuffer.create(s_levelState.sectorCount * 2, bufferDefSectors, true, s_gpuSourceData.sectors);
-				s_wallGpuBuffer.create(wallCount * 3, bufferDefSectors, true, s_gpuSourceData.walls);
+				TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Creating sector/wall GPU buffers (%u sectors, %d walls)...",
+					s_levelState.sectorCount, wallCount);
+				if (!s_sectorGpuBuffer.create(s_levelState.sectorCount * 2, bufferDefSectors, true, s_gpuSourceData.sectors)
+					|| !s_wallGpuBuffer.create(wallCount * 3, bufferDefSectors, true, s_gpuSourceData.walls))
+				{
+					TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "Failed to create sector/wall GPU buffers.");
+					renderer_fallbackToSoftware("GPU buffer creation failed.");
+					return;
+				}
 
 				m_gpuBuffersAllocated = true;
 				m_prevSectorCount = s_levelState.sectorCount;
@@ -971,18 +1052,29 @@ namespace TFE_Jedi
 			m_prevSectorCount = s_levelState.sectorCount;
 			m_prevWallCount = wallCount;
 
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Sector/wall GPU buffers ready (%u sectors, %d walls).", s_levelState.sectorCount, wallCount);
+
 			// Load textures into GPU memory.
 			s_trueColor  = (TFE_Settings::getGraphicsSettings()->colorMode == COLORMODE_TRUE_COLOR);
 			s_mipmapping = s_trueColor && TFE_Settings::getGraphicsSettings()->useMipmapping;
 			if (texturepacker_getGlobal())
 			{
-				texturepacker_discardUnreservedPages(texturepacker_getGlobal());
+				TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Packing level textures...");
+				TexturePacker* texturePacker = texturepacker_getGlobal();
+				texturepacker_begin(texturePacker);
+				texturepacker_discardUnreservedPages(texturePacker);
 
 				texturepacker_pack(level_getLevelTextures, POOL_LEVEL);
 				texturepacker_pack(level_getObjectTextures, POOL_LEVEL);
 				texturepacker_commit();
+				if (!texturepacker_flushGpu())
+				{
+					TFE_System::logWrite(LOG_WARNING, "GPU Renderer", "Level texture GPU upload failed or deferred.");
+				}
+				TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Texture pack complete.");
 			}
 
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Loading GPU models...");
 			model_loadGpuModels();
 			// Update the color map based on interpolation or true color settings.
 			updateColorMap();
@@ -1006,11 +1098,17 @@ namespace TFE_Jedi
 				// Load textures into GPU memory.
 				if (texturepacker_getGlobal())
 				{
-					texturepacker_discardUnreservedPages(texturepacker_getGlobal());
+					TexturePacker* texturePacker = texturepacker_getGlobal();
+					texturepacker_begin(texturePacker);
+					texturepacker_discardUnreservedPages(texturePacker);
 
 					texturepacker_pack(level_getLevelTextures, POOL_LEVEL);
 					texturepacker_pack(level_getObjectTextures, POOL_LEVEL);
 					texturepacker_commit();
+					if (!texturepacker_flushGpu())
+					{
+						TFE_System::logWrite(LOG_WARNING, "GPU Renderer", "Level texture GPU upload failed after color mode change.");
+					}
 				}
 				// Reload models.
 				model_loadGpuModels();
@@ -1829,6 +1927,12 @@ namespace TFE_Jedi
 	void drawPass(SectorPass pass)
 	{
 		if (!sdisplayList_getSize(pass)) { return; }
+		static bool s_loggedFirstDraw = false;
+		if (!s_loggedFirstDraw)
+		{
+			s_loggedFirstDraw = true;
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "First sector draw pass starting (pass %d).", (int)pass);
+		}
 		const TFE_Settings_Graphics* settings = TFE_Settings::getGraphicsSettings();
 
 		TexturePacker* texturePacker = texturepacker_getGlobal();
@@ -1842,6 +1946,11 @@ namespace TFE_Jedi
 		TFE_RenderState::setDepthFunction(CMP_LEQUAL);
 				
 		Shader* shader = &s_wallShader[pass];
+		if (!shader->getHandle() || !s_colormapTex)
+		{
+			TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "GPU draw pass unavailable (shader or colormap missing).");
+			return;
+		}
 		shader->bind();
 
 		s_indexBuffer.bind();
@@ -1850,6 +1959,11 @@ namespace TFE_Jedi
 		s_colormapTex->bind(5);
 		if (s_shaderSettings.trueColor)
 		{
+			if (!s_trueColorMapping)
+			{
+				TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "True color mapping unavailable.");
+				return;
+			}
 			s_trueColorMapping->bind(6);
 		}
 		else
@@ -1859,7 +1973,7 @@ namespace TFE_Jedi
 		textures->bind(7);
 		handleTextureFiltering(textures);
 
-		textureTable->bind(8);
+		texturepacker_bindTextureTable(8);
 
 	#if ACCURATE_MAPPING_ENABLE // Future work
 		if (s_trueColorToPal)
@@ -1949,6 +2063,11 @@ namespace TFE_Jedi
 	void drawSprites()
 	{
 		if (!sprdisplayList_getSize()) { return; }
+		if (!s_spriteShader.getHandle() || !s_colormapTex)
+		{
+			TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "GPU sprite draw unavailable (shader or colormap missing).");
+			return;
+		}
 		const TFE_Settings_Graphics* settings = TFE_Settings::getGraphicsSettings();
 		// For some reason depth test is required to write, so set the comparison function to always instead.
 		TFE_RenderState::setStateEnable(true,  STATE_DEPTH_WRITE | STATE_DEPTH_TEST);
@@ -1962,6 +2081,11 @@ namespace TFE_Jedi
 		//palette->bind(4);
 		if (s_shaderSettings.trueColor)
 		{
+			if (!s_trueColorMapping)
+			{
+				TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "True color mapping unavailable.");
+				return;
+			}
 			s_trueColorMapping->bind(4);
 		}
 		else
@@ -1978,7 +2102,7 @@ namespace TFE_Jedi
 		}
 
 		ShaderBuffer* textureTable = &texturePacker->textureTableGPU;
-		textureTable->bind(6);
+		texturepacker_bindTextureTable(6);
 
 		// Camera and lighting.
 		Vec4f lightData = { f32(s_worldAmbient), s_cameraLightSource ? 1.0f : 0.0f, 0.0f, s_showWireframe ? 1.0f : 0.0f };
@@ -2026,8 +2150,15 @@ namespace TFE_Jedi
 
 	void draw3d()
 	{
+		if (!s_colormapTex)
+		{
+			TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "GPU 3D draw unavailable (colormap missing).");
+			return;
+		}
 		const TFE_Settings_Graphics* settings = TFE_Settings::getGraphicsSettings();
 
+		// Vertex-drawn models (blaster bolts, etc.) are billboard quads — disable culling.
+		TFE_RenderState::setStateEnable(false, STATE_CULLING);
 		TFE_RenderState::setStateEnable(true, STATE_DEPTH_WRITE | STATE_DEPTH_TEST);
 		TFE_RenderState::setDepthFunction(CMP_LEQUAL);
 
@@ -2035,6 +2166,11 @@ namespace TFE_Jedi
 
 		if (s_shaderSettings.trueColor)
 		{
+			if (!s_trueColorMapping)
+			{
+				TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "True color mapping unavailable.");
+				return;
+			}
 			s_trueColorMapping->bind(0);
 			palette->bind(5);
 		}
@@ -2050,8 +2186,7 @@ namespace TFE_Jedi
 		textures->bind(2);
 		handleTextureFiltering(textures);
 
-		ShaderBuffer* textureTable = &texturePacker->textureTableGPU;
-		textureTable->bind(3);
+		texturepacker_bindTextureTable(3);
 		objectPortalPlanes_bind(4);
 		model_drawList();
 
@@ -2065,11 +2200,29 @@ namespace TFE_Jedi
 		TextureGpu::clearSlots(3);
 	}
 		
+	void TFE_Sectors_GPU::ensureColorMapUploaded()
+	{
+		if (!s_colorMap || !s_lightSourceRamp)
+		{
+			return;
+		}
+		if (!s_colormapTex || (s_shaderSettings.trueColor && !s_trueColorMapping))
+		{
+			updateColorMap();
+		}
+	}
+
 	void TFE_Sectors_GPU::draw(RSector* sector)
 	{
+		ensureColorMapUploaded();
+
 		// Check to see if a rendering setting has changed
 		// (this may require a shader recompile)
-		updateShaderSettings(false);
+		if (!updateShaderSettings(false))
+		{
+			renderer_fallbackToSoftware("GPU shader reload failed.");
+			return;
+		}
 
 		// Build the draw list.
 		if (!traverseScene(sector))
@@ -2167,6 +2320,13 @@ namespace TFE_Jedi
 			defines[defineCount].name = "OPT_TRUE_COLOR";
 			defines[defineCount].value = "1";
 			defineCount++;
+
+			if (TFE_Settings::getGraphicsSettings()->useMipmapping)
+			{
+				defines[defineCount].name = "OPT_MIPMAPPING";
+				defines[defineCount].value = "1";
+				defineCount++;
+			}
 		}
 		bool success = loadShaderVariant(0, defineCount, defines);
 
@@ -2201,8 +2361,15 @@ namespace TFE_Jedi
 			defines[defineCount].name = "OPT_TRUE_COLOR";
 			defines[defineCount].value = "1";
 			defineCount++;
+
+			if (TFE_Settings::getGraphicsSettings()->useMipmapping)
+			{
+				defines[defineCount].name = "OPT_MIPMAPPING";
+				defines[defineCount].value = "1";
+				defineCount++;
+			}
 		}
-		success |= loadShaderVariant(1, defineCount, defines);
+		success = loadShaderVariant(1, defineCount, defines) && success;
 
 		defineCount = 0;
 		if (s_shaderSettings.ditheredBilinear)
@@ -2232,10 +2399,20 @@ namespace TFE_Jedi
 			defines[defineCount].name = "OPT_TRUE_COLOR";
 			defines[defineCount].value = "1";
 			defineCount++;
-		}
-		success |= loadSpriteShader(defineCount, defines);
 
-		assert(success);
+			if (TFE_Settings::getGraphicsSettings()->useMipmapping)
+			{
+				defines[defineCount].name = "OPT_MIPMAPPING";
+				defines[defineCount].value = "1";
+				defineCount++;
+			}
+		}
+		success = loadSpriteShader(defineCount, defines) && success;
+
+		if (!success)
+		{
+			TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "Failed to load one or more sector GPU shader variants.");
+		}
 		return success;
 	}
 }

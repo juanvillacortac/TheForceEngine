@@ -138,7 +138,9 @@
 #endif
 
 // GL includes
-#if defined(IMGUI_IMPL_OPENGL_ES2)
+#if defined(IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
+#include <TFE_RenderBackend/Win32OpenGL/gl.h>
+#elif defined(IMGUI_IMPL_OPENGL_ES2)
 #if (defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_TV))
 #include <OpenGLES/ES2/gl.h>    // Use GL ES 2
 #else
@@ -204,6 +206,15 @@
 // Desktop GL 3.3+ and GL ES 3.0+ have glBindSampler()
 #if !defined(IMGUI_IMPL_OPENGL_ES2) && (defined(IMGUI_IMPL_OPENGL_ES3) || defined(GL_VERSION_3_3))
 #define IMGUI_IMPL_OPENGL_MAY_HAVE_BIND_SAMPLER
+#endif
+
+#if defined(TFE_IMGUI_USE_GLES)
+// GLES via GLAD: disable desktop-only paths that call missing/null procs on Mali.
+#undef IMGUI_IMPL_OPENGL_HAS_EXTENSIONS
+#undef IMGUI_IMPL_OPENGL_MAY_HAVE_POLYGON_MODE
+#undef IMGUI_IMPL_OPENGL_MAY_HAVE_PRIMITIVE_RESTART
+#undef IMGUI_IMPL_OPENGL_MAY_HAVE_VTX_OFFSET
+#undef IMGUI_IMPL_OPENGL_MAY_HAVE_BIND_SAMPLER
 #endif
 
 // [Debugging]
@@ -308,7 +319,10 @@ bool    ImGui_ImplOpenGL3_Init(const char* glsl_version)
     if (major == 0 && minor == 0)
         sscanf(gl_version_str, "%d.%d", &major, &minor); // Query GL_VERSION in desktop GL 2.x, the string will start with "<major>.<minor>"
     bd->GlVersion = (GLuint)(major * 100 + minor * 10);
-#if defined(GL_CONTEXT_PROFILE_MASK)
+#if defined(TFE_IMGUI_USE_GLES)
+    bd->GlProfileIsES3 = true;
+#endif
+#if defined(GL_CONTEXT_PROFILE_MASK) && !defined(TFE_IMGUI_USE_GLES)
     if (bd->GlVersion >= 320)
         glGetIntegerv(GL_CONTEXT_PROFILE_MASK, &bd->GlProfileMask);
     bd->GlProfileIsCompat = (bd->GlProfileMask & GL_CONTEXT_COMPATIBILITY_PROFILE_BIT) != 0;
@@ -355,6 +369,13 @@ bool    ImGui_ImplOpenGL3_Init(const char* glsl_version)
         glsl_version = "#version 130";
 #endif
     }
+#if defined(TFE_IMGUI_USE_GLES)
+    // Embedded ImGui GLES shaders only ship precision qualifiers for 300 es.
+    // Passing 320 es (engine tier) selects desktop GLSL bodies and crashes Mali at first draw.
+    bd->GlProfileIsES3 = true;
+    bd->GlProfileIsES2 = false;
+    glsl_version = "#version 300 es";
+#endif
     IM_ASSERT((int)strlen(glsl_version) + 2 < IM_ARRAYSIZE(bd->GlslVersionString));
     strcpy(bd->GlslVersionString, glsl_version);
     strcat(bd->GlslVersionString, "\n");
@@ -402,7 +423,10 @@ void    ImGui_ImplOpenGL3_NewFrame()
     IM_ASSERT(bd != nullptr && "Context or backend not initialized! Did you call ImGui_ImplOpenGL3_Init()?");
 
     if (!bd->ShaderHandle)
-        ImGui_ImplOpenGL3_CreateDeviceObjects();
+    {
+        if (!ImGui_ImplOpenGL3_CreateDeviceObjects())
+            return;
+    }
     if (!bd->FontTexture)
         ImGui_ImplOpenGL3_CreateFontsTexture();
 }
@@ -493,6 +517,8 @@ void    ImGui_ImplOpenGL3_RenderDrawData(ImDrawData* draw_data)
         return;
 
     ImGui_ImplOpenGL3_Data* bd = ImGui_ImplOpenGL3_GetBackendData();
+    if (!bd->ShaderHandle)
+        return;
 
     // Backup GL state
     GLenum last_active_texture; glGetIntegerv(GL_ACTIVE_TEXTURE, (GLint*)&last_active_texture);
@@ -878,11 +904,18 @@ bool    ImGui_ImplOpenGL3_CreateDeviceObjects()
         vertex_shader = vertex_shader_glsl_410_core;
         fragment_shader = fragment_shader_glsl_410_core;
     }
-    else if (glsl_version == 300)
+    else if (glsl_version == 300 || (bd->GlProfileIsES3 && glsl_version >= 300))
     {
         vertex_shader = vertex_shader_glsl_300_es;
         fragment_shader = fragment_shader_glsl_300_es;
     }
+#if defined(TFE_IMGUI_USE_GLES)
+    else if (strstr(bd->GlslVersionString, " es") != nullptr)
+    {
+        vertex_shader = vertex_shader_glsl_300_es;
+        fragment_shader = fragment_shader_glsl_300_es;
+    }
+#endif
     else
     {
         vertex_shader = vertex_shader_glsl_130;
@@ -894,20 +927,36 @@ bool    ImGui_ImplOpenGL3_CreateDeviceObjects()
     GLuint vert_handle = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vert_handle, 2, vertex_shader_with_version, nullptr);
     glCompileShader(vert_handle);
-    CheckShader(vert_handle, "vertex shader");
+    if (!CheckShader(vert_handle, "vertex shader"))
+    {
+        glDeleteShader(vert_handle);
+        return false;
+    }
 
     const GLchar* fragment_shader_with_version[2] = { bd->GlslVersionString, fragment_shader };
     GLuint frag_handle = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(frag_handle, 2, fragment_shader_with_version, nullptr);
     glCompileShader(frag_handle);
-    CheckShader(frag_handle, "fragment shader");
+    if (!CheckShader(frag_handle, "fragment shader"))
+    {
+        glDeleteShader(vert_handle);
+        glDeleteShader(frag_handle);
+        return false;
+    }
 
     // Link
     bd->ShaderHandle = glCreateProgram();
     glAttachShader(bd->ShaderHandle, vert_handle);
     glAttachShader(bd->ShaderHandle, frag_handle);
     glLinkProgram(bd->ShaderHandle);
-    CheckProgram(bd->ShaderHandle, "shader program");
+    if (!CheckProgram(bd->ShaderHandle, "shader program"))
+    {
+        glDeleteProgram(bd->ShaderHandle);
+        bd->ShaderHandle = 0;
+        glDeleteShader(vert_handle);
+        glDeleteShader(frag_handle);
+        return false;
+    }
 
     glDetachShader(bd->ShaderHandle, vert_handle);
     glDetachShader(bd->ShaderHandle, frag_handle);

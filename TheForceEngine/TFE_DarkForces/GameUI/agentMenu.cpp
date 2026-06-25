@@ -9,10 +9,12 @@
 #include <TFE_DarkForces/agent.h>
 #include <TFE_DarkForces/util.h>
 #include <TFE_DarkForces/Landru/lcanvas.h>
+#include <TFE_DarkForces/Landru/lpalette.h>
 #include <TFE_Archive/archive.h>
 #include <TFE_Settings/settings.h>
 #include <TFE_Input/input.h>
 #include <TFE_RenderBackend/renderBackend.h>
+#include <TFE_DarkForces/mission.h>
 #include <TFE_Jedi/Math/core_math.h>
 #include <TFE_Jedi/Level/rtexture.h>
 #include <TFE_System/system.h>
@@ -72,7 +74,7 @@ namespace TFE_DarkForces
 	static JBool s_missionBegin = JFALSE;
 	static EditBox s_editBox = {};
 	
-	static u8 s_menuPalette[768];
+	static LPalette* s_agentLpalette = nullptr;
 	static DeltFrame* s_agentMenuFrames;
 	static DeltFrame* s_agentDlgFrames;
 	static u32 s_agentMenuCount;
@@ -80,6 +82,51 @@ namespace TFE_DarkForces
 	
 	static char s_newAgentName[32];
 	static LangHotkeys* s_langKeys;
+
+	enum AgentHandheldFocus
+	{
+		AH_FOCUS_AGENT = 0,
+		AH_FOCUS_MISSION,
+		AH_FOCUS_NEW,
+		AH_FOCUS_REMOVE,
+		AH_FOCUS_EXIT,
+		AH_FOCUS_BEGIN,
+		AH_FOCUS_COUNT
+	};
+	static s32 s_agentHandheldFocus = AH_FOCUS_AGENT;
+	static s32 s_agentDlgFocus = NEW_AGENT_NO;
+
+	static void agentMenu_handheldAdjustAgent(s32 delta)
+	{
+		if (s_agentCount <= 0)
+		{
+			return;
+		}
+		s_agentId += delta;
+		if (s_agentId >= (s32)s_agentCount) { s_agentId = 0; }
+		if (s_agentId < 0) { s_agentId = s_agentCount - 1; }
+		s_selectedMission = s_agentData[s_agentId].selectedMission - 1;
+		s_lastSelectedAgent = JTRUE;
+	}
+
+	static void agentMenu_handheldAdjustMission(s32 delta)
+	{
+		if (s_agentId < 0 || s_agentData[s_agentId].nextMission <= 1)
+		{
+			return;
+		}
+		s_selectedMission += delta;
+		if (s_selectedMission > s_agentData[s_agentId].nextMission - 1 || s_selectedMission == 14)
+		{
+			s_selectedMission = 0;
+		}
+		if (s_selectedMission < 0)
+		{
+			s_selectedMission = s_agentData[s_agentId].nextMission - 1;
+		}
+		s_agentData[s_agentId].selectedMission = s_selectedMission + 1;
+		s_lastSelectedAgent = JFALSE;
+	}
 
 	///////////////////////////////////////////
 	// Forward Declarations
@@ -107,6 +154,11 @@ namespace TFE_DarkForces
 		s_agentMenuFrames = nullptr;
 		s_agentDlgFrames = nullptr;
 		s_framebuffer = nullptr;
+		if (s_agentLpalette)
+		{
+			lpalette_free(s_agentLpalette);
+			s_agentLpalette = nullptr;
+		}
 		delt_resetState();
 	}
 
@@ -190,7 +242,7 @@ namespace TFE_DarkForces
 
 		const s32 x = s_cursorPos.x;
 		const s32 z = s_cursorPos.z;
-		if (TFE_Input::mousePressed(MBUTTON_LEFT))
+		if (menu_pointerPressed())
 		{
 			s_buttonPressed = -1;
 			for (u32 i = 0; i < AGENT_COUNT; i++)
@@ -220,7 +272,7 @@ namespace TFE_DarkForces
 				}
 			}
 		}
-		else if (TFE_Input::mouseDown(MBUTTON_LEFT) && s_buttonPressed >= 0)
+		else if (menu_pointerDown() && s_buttonPressed >= 0)
 		{
 			// Verify that the mouse is still over the button.
 			if (x >= c_agentButtons[s_buttonPressed].x && x < c_agentButtons[s_buttonPressed].x + c_agentButtonDim.x &&
@@ -235,6 +287,112 @@ namespace TFE_DarkForces
 		}
 		else
 		{
+			s32 actionButton = -1;
+			JBool activateButton = JFALSE;
+
+			if (menu_isHandheld())
+			{
+				if (menu_handheldNavPressed(MENU_NAV_LEFT))
+				{
+					if (s_agentHandheldFocus == AH_FOCUS_MISSION)
+					{
+						s_agentHandheldFocus = AH_FOCUS_AGENT;
+					}
+					else if (s_agentHandheldFocus == AH_FOCUS_AGENT)
+					{
+						s_agentHandheldFocus = AH_FOCUS_BEGIN;
+					}
+					else
+					{
+						s_agentHandheldFocus = (s_agentHandheldFocus + AH_FOCUS_COUNT - 1) % AH_FOCUS_COUNT;
+					}
+				}
+				else if (menu_handheldNavPressed(MENU_NAV_RIGHT))
+				{
+					if (s_agentHandheldFocus == AH_FOCUS_AGENT)
+					{
+						s_agentHandheldFocus = AH_FOCUS_MISSION;
+					}
+					else if (s_agentHandheldFocus == AH_FOCUS_MISSION)
+					{
+						s_agentHandheldFocus = AH_FOCUS_NEW;
+					}
+					else
+					{
+						s_agentHandheldFocus = (s_agentHandheldFocus + 1) % AH_FOCUS_COUNT;
+					}
+				}
+				else if (menu_handheldNavPressed(MENU_NAV_UP))
+				{
+					if (s_agentHandheldFocus == AH_FOCUS_AGENT)
+					{
+						agentMenu_handheldAdjustAgent(-1);
+					}
+					else if (s_agentHandheldFocus == AH_FOCUS_MISSION)
+					{
+						agentMenu_handheldAdjustMission(-1);
+					}
+					else
+					{
+						s_agentHandheldFocus = (s_agentHandheldFocus + AH_FOCUS_COUNT - 1) % AH_FOCUS_COUNT;
+					}
+				}
+				else if (menu_handheldNavPressed(MENU_NAV_DOWN))
+				{
+					if (s_agentHandheldFocus == AH_FOCUS_AGENT)
+					{
+						agentMenu_handheldAdjustAgent(1);
+					}
+					else if (s_agentHandheldFocus == AH_FOCUS_MISSION)
+					{
+						agentMenu_handheldAdjustMission(1);
+					}
+					else
+					{
+						s_agentHandheldFocus = (s_agentHandheldFocus + 1) % AH_FOCUS_COUNT;
+					}
+				}
+
+				if (s_agentHandheldFocus == AH_FOCUS_AGENT)
+				{
+					s_lastSelectedAgent = JTRUE;
+				}
+				else if (s_agentHandheldFocus == AH_FOCUS_MISSION)
+				{
+					s_lastSelectedAgent = JFALSE;
+				}
+				else if (s_agentHandheldFocus >= AH_FOCUS_NEW)
+				{
+					actionButton = s_agentHandheldFocus - AH_FOCUS_NEW;
+					s_buttonPressed = actionButton;
+					s_buttonHover = JTRUE;
+				}
+				else
+				{
+					s_buttonPressed = -1;
+					s_buttonHover = JFALSE;
+				}
+
+				if (menu_handheldActivatePressed())
+				{
+					if (s_agentHandheldFocus == AH_FOCUS_AGENT || s_agentHandheldFocus == AH_FOCUS_MISSION)
+					{
+						if (s_agentCount > 0 && s_selectedMission >= 0)
+						{
+							activateButton = JTRUE;
+							actionButton = AGENT_BEGIN;
+						}
+					}
+					else if (s_agentHandheldFocus >= AH_FOCUS_NEW)
+					{
+						activateButton = JTRUE;
+						actionButton = s_agentHandheldFocus - AH_FOCUS_NEW;
+						s_buttonPressed = actionButton;
+						s_buttonHover = JTRUE;
+					}
+				}
+			}
+
 			if (TFE_Input::keyPressed(KEY_N))
 			{
 				s_buttonPressed = AGENT_NEW;
@@ -250,14 +408,9 @@ namespace TFE_DarkForces
 				s_buttonPressed = AGENT_EXIT;
 				s_buttonHover = JTRUE;
 			}
-			else if (TFE_Input::keyPressed(s_langKeys->k_begin) || TFE_Input::keyPressed(KEY_RETURN) || TFE_Input::keyPressed(KEY_KP_ENTER))
-			{
-				s_buttonPressed = AGENT_BEGIN;
-				s_buttonHover = JTRUE;
-			}
 
 			// Arrow keys to change the selected agent or mission.
-			if (TFE_Input::bufferedKeyDown(KEY_DOWN))
+			if (!menu_isHandheld() && TFE_Input::bufferedKeyDown(KEY_DOWN))
 			{
 				if (s_lastSelectedAgent && s_agentCount > 0)
 				{
@@ -271,7 +424,7 @@ namespace TFE_DarkForces
 					if (s_selectedMission > s_agentData[s_agentId].nextMission - 1 || s_selectedMission == 14) { s_selectedMission = 0; }
 				}
 			}
-			else if (TFE_Input::bufferedKeyDown(KEY_UP))
+			else if (!menu_isHandheld() && TFE_Input::bufferedKeyDown(KEY_UP))
 			{
 				if (s_lastSelectedAgent && s_agentCount > 0)
 				{
@@ -285,28 +438,55 @@ namespace TFE_DarkForces
 					if (s_selectedMission < 0) { s_selectedMission = s_agentData[s_agentId].nextMission - 1; }
 				}
 			}
-			else if (TFE_Input::bufferedKeyDown(KEY_LEFT) || TFE_Input::bufferedKeyDown(KEY_RIGHT))
+			else if (!menu_isHandheld() && (TFE_Input::bufferedKeyDown(KEY_LEFT) || TFE_Input::bufferedKeyDown(KEY_RIGHT)))
 			{
 				s_lastSelectedAgent = !s_lastSelectedAgent;
 			}
 
-			if (s_buttonPressed >= AGENT_NEW && s_buttonHover)
+			if ((TFE_Input::keyPressed(s_langKeys->k_begin) || TFE_Input::keyPressed(KEY_RETURN) || TFE_Input::keyPressed(KEY_KP_ENTER))
+				&& !menu_isHandheld())
 			{
-				switch (s_buttonPressed)
+				s_buttonPressed = AGENT_BEGIN;
+				s_buttonHover = JTRUE;
+				activateButton = JTRUE;
+				actionButton = AGENT_BEGIN;
+			}
+
+			if (!activateButton && !menu_isHandheld() && s_buttonPressed >= AGENT_NEW && s_buttonHover)
+			{
+				activateButton = JTRUE;
+				actionButton = s_buttonPressed;
+			}
+
+			if (activateButton)
+			{
+				switch (actionButton)
 				{
 					case AGENT_NEW:
 					{
 						s_newAgentDlg = JTRUE;
-						memset(s_newAgentName, 0, 32);
-						s_editBox.cursor = 0;
+						s_agentDlgFocus = NEW_AGENT_YES;
+						if (menu_isHandheld())
+						{
+							strncpy(s_newAgentName, "Kyle Katarn", sizeof(s_newAgentName) - 1);
+							s_newAgentName[sizeof(s_newAgentName) - 1] = 0;
+							s_editBox.cursor = (s32)strlen(s_newAgentName);
+						}
+						else
+						{
+							memset(s_newAgentName, 0, 32);
+							s_editBox.cursor = 0;
+						}
 						s_editBox.inputField = s_newAgentName;
 						s_editBox.maxLen = 16;
 					} break;
 					case AGENT_REMOVE:
 						s_removeAgentDlg = JTRUE;
+						s_agentDlgFocus = NEW_AGENT_NO;
 						break;
 					case AGENT_EXIT:
 						s_quitConfirmDlg = JTRUE;
+						s_agentDlgFocus = NEW_AGENT_NO;
 						break;
 					case AGENT_BEGIN:
 						if (s_agentCount > 0 && s_selectedMission >= 0)
@@ -325,6 +505,7 @@ namespace TFE_DarkForces
 
 	void agentMenu_draw()
 	{
+		s_framebuffer = vfb_getCpuBuffer();
 		memset(s_framebuffer, 0, 320 * 200);
 		blitDeltaFrame(&s_agentMenuFrames[0], 0, 0, s_framebuffer);
 		
@@ -350,6 +531,7 @@ namespace TFE_DarkForces
 			else
 			{
 				if (s_buttonPressed == i && s_buttonHover) { index = i * 2 + 1; }
+				else if (menu_isHandheld() && s_agentHandheldFocus == AH_FOCUS_NEW + i) { index = i * 2 + 1; }
 				else { index = i * 2 + 2; }
 			}
 			blitDeltaFrame(&s_agentMenuFrames[index], 0, 0, s_framebuffer);
@@ -425,26 +607,25 @@ namespace TFE_DarkForces
 		}
 	}
 
-	void setPalette()
+	void agentMenu_blit()
 	{
-		// Update the palette.
-		u32 palette[256];
-		u32* outColor = palette;
-		u8* srcColor = s_menuPalette;
-		for (s32 i = 0; i < 256; i++, outColor++, srcColor += 3)
+		s_framebuffer = vfb_getCpuBuffer();
+		if (s_agentLpalette)
 		{
-			*outColor = u32(srcColor[0]) | (u32(srcColor[1]) << 8u) | (u32(srcColor[2]) << 16u) | (0xffu << 24u);
+			lpalette_setScreenPal(s_agentLpalette);
 		}
-		vfb_setPalette(palette);
+		menu_blitCursor(s_cursorPos.x, s_cursorPos.z, s_framebuffer);
+		menu_blitToScreen(s_framebuffer);
 	}
 
-	// TFE Specific.
 	void agentMenu_startupDisplay()
 	{
 		s_framebuffer = menu_startupDisplay();
 		menu_resetCursor();
-
-		setPalette();
+		if (s_agentLpalette)
+		{
+			lpalette_setScreenPal(s_agentLpalette);
+		}
 	}
 
 	void agentMenu_load(LangHotkeys* langKeys)
@@ -454,7 +635,7 @@ namespace TFE_DarkForces
 		Archive* archive = Archive::getArchive(ARCHIVE_LFD, "AGENTMNU", filePath.path);
 		TFE_Paths::addLocalArchive(archive);
 
-		loadPaletteFromPltt("agentmnu.pltt", s_menuPalette);
+		s_agentLpalette = lpalette_load("agentmnu");
 		s_agentMenuCount = getFramesFromAnim("agentmnu.anim", &s_agentMenuFrames);
 		s_agentDlgCount = getFramesFromAnim("agentdlg.anim", &s_agentDlgFrames);
 		getFrameFromDelt("cursor.delt", &s_cursor);
@@ -492,13 +673,7 @@ namespace TFE_DarkForces
 		}
 
 		s_missionBegin = JFALSE;
-	}
-		
-	void agentMenu_blit()
-	{
-		setPalette();
-		menu_blitCursor(s_cursorPos.x, s_cursorPos.z, s_framebuffer);
-		menu_blitToScreen(s_framebuffer);
+		s_agentHandheldFocus = AH_FOCUS_AGENT;
 	}
 
 	void agentMenu_setAgentName(const char* name)
@@ -563,11 +738,12 @@ namespace TFE_DarkForces
 	// UI routines.
 	void drawYesNoButtons(u32 indexNo, u32 indexYes)
 	{
-		if (s_buttonPressed == 0 && s_buttonHover)
+		const s32 focus = menu_isHandheld() ? s_agentDlgFocus : s_buttonPressed;
+		if (focus == 0 && (s_buttonHover || menu_isHandheld()))
 		{
 			blitDeltaFrame(&s_agentDlgFrames[indexNo], 0, 0, s_framebuffer);
 		}
-		else if (s_buttonPressed == 1 && s_buttonHover)
+		else if (focus == 1 && (s_buttonHover || menu_isHandheld()))
 		{
 			blitDeltaFrame(&s_agentDlgFrames[indexYes], 0, 0, s_framebuffer);
 		}
@@ -590,6 +766,38 @@ namespace TFE_DarkForces
 	{
 		updateEditBox(&s_editBox);
 
+		if (menu_isHandheld())
+		{
+			s_agentDlgFocus = NEW_AGENT_YES;
+			if (menu_handheldNavPressed(MENU_NAV_LEFT))
+			{
+				s_agentDlgFocus = NEW_AGENT_NO;
+			}
+			else if (menu_handheldNavPressed(MENU_NAV_RIGHT))
+			{
+				s_agentDlgFocus = NEW_AGENT_YES;
+			}
+
+			s_buttonPressed = s_agentDlgFocus;
+			s_buttonHover = JTRUE;
+
+			if (menu_handheldCancelPressed())
+			{
+				s_newAgentDlg = JFALSE;
+				return;
+			}
+			if (menu_handheldActivatePressed())
+			{
+				if (s_agentDlgFocus == NEW_AGENT_YES)
+				{
+					agentMenu_createNewAgent();
+				}
+				s_newAgentDlg = JFALSE;
+				return;
+			}
+			return;
+		}
+
 		if (TFE_Input::keyPressed(KEY_RETURN) || TFE_Input::keyPressed(KEY_KP_ENTER))
 		{
 			agentMenu_createNewAgent();
@@ -602,7 +810,7 @@ namespace TFE_DarkForces
 			return;
 		}
 
-		if (TFE_Input::mousePressed(MBUTTON_LEFT))
+		if (menu_pointerPressed())
 		{
 			s_buttonPressed = -1;
 			for (u32 i = 0; i < NEW_AGENT_COUNT; i++)
@@ -616,7 +824,7 @@ namespace TFE_DarkForces
 				}
 			}
 		}
-		else if (TFE_Input::mouseDown(MBUTTON_LEFT) && s_buttonPressed >= 0)
+		else if (menu_pointerDown() && s_buttonPressed >= 0)
 		{
 			// Verify that the mouse is still over the button.
 			if (s_cursorPos.x >= c_newAgentButtons[s_buttonPressed].x && s_cursorPos.x < c_newAgentButtons[s_buttonPressed].x + c_newAgentButtonDim.x &&
@@ -648,13 +856,44 @@ namespace TFE_DarkForces
 
 	void updateRemoveAgentDlg()
 	{
+		if (menu_isHandheld())
+		{
+			if (menu_handheldNavPressed(MENU_NAV_LEFT))
+			{
+				s_agentDlgFocus = NEW_AGENT_NO;
+			}
+			else if (menu_handheldNavPressed(MENU_NAV_RIGHT))
+			{
+				s_agentDlgFocus = NEW_AGENT_YES;
+			}
+
+			s_buttonPressed = s_agentDlgFocus;
+			s_buttonHover = JTRUE;
+
+			if (menu_handheldCancelPressed())
+			{
+				s_removeAgentDlg = false;
+				return;
+			}
+			if (menu_handheldActivatePressed())
+			{
+				if (s_agentDlgFocus == NEW_AGENT_YES)
+				{
+					agentMenu_removeAgent(s_agentId);
+				}
+				s_removeAgentDlg = false;
+				return;
+			}
+			return;
+		}
+
 		if (TFE_Input::keyPressed(KEY_RETURN) || TFE_Input::keyPressed(KEY_KP_ENTER) || TFE_Input::keyPressed(KEY_ESCAPE))
 		{
 			s_removeAgentDlg = false;
 			return;
 		}
 
-		if (TFE_Input::mousePressed(MBUTTON_LEFT))
+		if (menu_pointerPressed())
 		{
 			s_buttonPressed = -1;
 			for (u32 i = 0; i < NEW_AGENT_COUNT; i++)
@@ -668,7 +907,7 @@ namespace TFE_DarkForces
 				}
 			}
 		}
-		else if (TFE_Input::mouseDown(MBUTTON_LEFT) && s_buttonPressed >= 0)
+		else if (menu_pointerDown() && s_buttonPressed >= 0)
 		{
 			// Verify that the mouse is still over the button.
 			if (s_cursorPos.x >= c_newAgentButtons[s_buttonPressed].x && s_cursorPos.x < c_newAgentButtons[s_buttonPressed].x + c_newAgentButtonDim.x &&
@@ -709,6 +948,34 @@ namespace TFE_DarkForces
 	JBool updateQuitConfirmDlg()
 	{
 		JBool quit = JFALSE;
+
+		if (menu_isHandheld())
+		{
+			if (menu_handheldNavPressed(MENU_NAV_LEFT))
+			{
+				s_agentDlgFocus = NEW_AGENT_NO;
+			}
+			else if (menu_handheldNavPressed(MENU_NAV_RIGHT))
+			{
+				s_agentDlgFocus = NEW_AGENT_YES;
+			}
+
+			s_buttonPressed = s_agentDlgFocus;
+			s_buttonHover = JTRUE;
+
+			if (menu_handheldCancelPressed())
+			{
+				s_quitConfirmDlg = JFALSE;
+				return JFALSE;
+			}
+			if (menu_handheldActivatePressed())
+			{
+				s_quitConfirmDlg = JFALSE;
+				return s_agentDlgFocus == NEW_AGENT_YES ? JTRUE : JFALSE;
+			}
+			return JFALSE;
+		}
+
 		if (TFE_Input::keyPressed(KEY_ESCAPE))
 		{
 			s_quitConfirmDlg = JFALSE;
@@ -720,7 +987,7 @@ namespace TFE_DarkForces
 			return JTRUE;
 		}
 
-		if (TFE_Input::mousePressed(MBUTTON_LEFT))
+		if (menu_pointerPressed())
 		{
 			s_buttonPressed = -1;
 			for (u32 i = 0; i < NEW_AGENT_COUNT; i++)
@@ -734,7 +1001,7 @@ namespace TFE_DarkForces
 				}
 			}
 		}
-		else if (TFE_Input::mouseDown(MBUTTON_LEFT) && s_buttonPressed >= 0)
+		else if (menu_pointerDown() && s_buttonPressed >= 0)
 		{
 			// Verify that the mouse is still over the button.
 			if (s_cursorPos.x >= c_newAgentButtons[s_buttonPressed].x && s_cursorPos.x < c_newAgentButtons[s_buttonPressed].x + c_newAgentButtonDim.x &&

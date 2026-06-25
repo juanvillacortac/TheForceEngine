@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/types.h>
-#include <signal.h>
+#include <ucontext.h>
 #include "crashHandler.h"
 #include <TFE_System/system.h>
 
@@ -58,7 +58,7 @@ static void tfe_sigaction(int signo, siginfo_t *siginfo, void *uctx)
 		return;
 	}
 
-	TFE_System::logWrite(LOG_ERROR, "CrashHandler", "Received Signal %d errno %d code %d", signo, siginfo->si_addr, siginfo->si_errno, siginfo->si_code);
+	TFE_System::logWrite(LOG_ERROR, "CrashHandler", "Received Signal %d errno %d code %d", signo, siginfo->si_errno, siginfo->si_code);
 
 	switch (signo) {
 	case SIGILL:
@@ -66,6 +66,14 @@ static void tfe_sigaction(int signo, siginfo_t *siginfo, void *uctx)
 	case SIGSEGV:
 	case SIGBUS:
 		TFE_System::logWrite(LOG_ERROR, "CrashHandler", "faulting address %p", siginfo->si_addr);
+#if defined(__aarch64__)
+		if (uctx)
+		{
+			ucontext_t* uc = (ucontext_t*)uctx;
+			TFE_System::logWrite(LOG_ERROR, "CrashHandler", "PC at %p", (void*)uc->uc_mcontext.pc);
+		}
+#endif
+		break;
 	}
 
 	// backtrace() can also segfault; purposefully ignore SEGV before calling it.

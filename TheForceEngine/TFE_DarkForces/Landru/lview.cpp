@@ -1,6 +1,7 @@
 #include "lview.h"
 #include "lactor.h"
 #include "lcanvas.h"
+#include "ldraw.h"
 #include "lpalette.h"
 #include "lsystem.h"
 #include "lfade.h"
@@ -122,6 +123,14 @@ namespace TFE_DarkForces
 		// For TFE, we run once loop iteration at a time, meaning that we have to
 		// pause the view code using internal state.
 		s_updateView = lcanvas_applyFade(JFALSE);
+		if (s_updateView)
+		{
+			LRect bounds;
+			lcanvas_getBounds(&bounds);
+			const s32 width  = bounds.right - bounds.left;
+			const s32 height = bounds.bottom - bounds.top;
+			memcpy(vfb_getCpuBuffer(), ldraw_getBitmap(), width * height);
+		}
 		vfb_swap();
 	}
 

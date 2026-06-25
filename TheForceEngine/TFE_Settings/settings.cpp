@@ -11,6 +11,7 @@
 #include <assert.h>
 #include <algorithm>
 #include <vector>
+#include <cstdlib>
 
 #ifdef _WIN32
 #include "windows/registry.h"
@@ -168,13 +169,36 @@ namespace TFE_Settings
 
 	void autodetectGamePaths()
 	{
+		// PortMaster / launcher: TFE_GAME_ROOT overrides autodetect (like OPENJKDF2_ROOT).
+		const char* envRoot = std::getenv("TFE_GAME_ROOT");
+		if (envRoot && envRoot[0])
+		{
+			char resolved[TFE_MAX_PATH];
+			memset(resolved, 0, sizeof(resolved));
+			if (FileUtil::directoryExists(envRoot, resolved))
+			{
+				strcpy(s_gameSettings.header[Game_Dark_Forces].sourcePath, resolved);
+			}
+			else
+			{
+				strncpy(s_gameSettings.header[Game_Dark_Forces].sourcePath, envRoot, TFE_MAX_PATH - 1);
+				s_gameSettings.header[Game_Dark_Forces].sourcePath[TFE_MAX_PATH - 1] = 0;
+				FileUtil::fixupPath(s_gameSettings.header[Game_Dark_Forces].sourcePath);
+			}
+		}
+
 		for (u32 gameId = 0; gameId < Game_Count; gameId++)
 		{
 			const size_t sourcePathLen = strlen(s_gameSettings.header[gameId].sourcePath);
 			bool pathValid = sourcePathLen && validatePath(s_gameSettings.header[gameId].sourcePath, c_validationFile[gameId]);
 
+			if (pathValid)
+			{
+				continue;
+			}
+
 			// First check locally, and then check the registry.
-			if (!pathValid && gameId == Game_Dark_Forces)	// Only Dark Forces for now.
+			if (gameId == Game_Dark_Forces)	// Only Dark Forces for now.
 			{
 				// First try the local path.
 				char localPath[TFE_MAX_PATH];
@@ -197,6 +221,25 @@ namespace TFE_Settings
 				{
 					char gamePath[TFE_MAX_PATH];
 					sprintf(gamePath, "%sGames/Dark Forces/", TFE_Paths::getPath(PATH_PROGRAM));
+					FileUtil::fixupPath(gamePath);
+
+					sprintf(localPath, "%sDARK.GOB", gamePath);
+					if (file.open(localPath, Stream::MODE_READ))
+					{
+						if (file.getSize() > 1)
+						{
+							strcpy(s_gameSettings.header[gameId].sourcePath, gamePath);
+							pathValid = true;
+						}
+						file.close();
+					}
+				}
+
+				// PortMaster: game/ next to the engine binary
+				if (!pathValid)
+				{
+					char gamePath[TFE_MAX_PATH];
+					sprintf(gamePath, "%sgame/", TFE_Paths::getPath(PATH_PROGRAM));
 					FileUtil::fixupPath(gamePath);
 
 					sprintf(localPath, "%sDARK.GOB", gamePath);

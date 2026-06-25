@@ -5,6 +5,7 @@
 #include <TFE_FileSystem/filestream.h>
 #include <TFE_FileSystem/paths.h>
 #include <TFE_RenderBackend/renderBackend.h>
+#include "tfe_gles_ext.h"
 #include "gl.h"
 #include <assert.h>
 #include <vector>
@@ -33,46 +34,132 @@ namespace ShaderGL
 
 bool Shader::create(const char* vertexShaderGLSL, const char* fragmentShaderGLSL, const char* defineString/* = nullptr*/, ShaderVersion version/* = SHADER_VER_COMPTABILE*/)
 {
+	destroy();
+
 	// Create shaders
 	m_shaderVersion = version;
 
 	const GLchar* version_string;
+	const GLchar* vert_preamble = "";
+	const GLchar* frag_preamble = "";
+	static std::string s_buffer2dDefineMerge;
+	const char* effectiveDefines = defineString;
 	if (strcmp(SDL_GetPlatform(), "Mac OS X") == 0) {
-		// Force GLSL version 410 for macOS
 		version_string = "#version 410\n";
+	} else if (tfe_UseGLES()) {
+		version_string = tfe_GetGLSLVersionStringForBackend();
+		vert_preamble = tfe_GetGLSLVertexPreamble();
+		frag_preamble = tfe_GetGLSLFragmentPreamble();
 	} else {
 		version_string = ShaderGL::c_glslVersionString[m_shaderVersion];
 	}
 
-	const GLchar *vertex_shader_with_version[3] = { version_string, defineString ? defineString : "", vertexShaderGLSL };
+	const char* buffer2dDefines = tfe_GetShaderBuffer2DDefines();
+	if (buffer2dDefines && buffer2dDefines[0])
+	{
+		s_buffer2dDefineMerge = buffer2dDefines;
+		if (defineString && defineString[0])
+		{
+			s_buffer2dDefineMerge += defineString;
+		}
+		effectiveDefines = s_buffer2dDefineMerge.c_str();
+	}
+
+	// Mali GLES: merge preamble + defines + body into one source string so #defines
+	// are visible to #included headers (bufferAccess.h) in the same translation unit.
+	static std::string s_vertSourceMerge;
+	static std::string s_fragSourceMerge;
+	const char* vertShaderSrc = vertexShaderGLSL;
+	const char* fragShaderSrc = fragmentShaderGLSL;
+	if (tfe_UseGLES())
+	{
+		s_vertSourceMerge.clear();
+		if (vert_preamble[0]) { s_vertSourceMerge += vert_preamble; }
+		if (effectiveDefines && effectiveDefines[0]) { s_vertSourceMerge += effectiveDefines; }
+		s_vertSourceMerge += vertexShaderGLSL;
+		vertShaderSrc = s_vertSourceMerge.c_str();
+
+		s_fragSourceMerge.clear();
+		if (frag_preamble[0]) { s_fragSourceMerge += frag_preamble; }
+		if (effectiveDefines && effectiveDefines[0]) { s_fragSourceMerge += effectiveDefines; }
+		s_fragSourceMerge += fragmentShaderGLSL;
+		fragShaderSrc = s_fragSourceMerge.c_str();
+	}
+
+	const GLchar* vert_parts[3];
+	int vert_count = 0;
+	vert_parts[vert_count++] = version_string;
+	if (!tfe_UseGLES())
+	{
+		if (vert_preamble[0]) { vert_parts[vert_count++] = vert_preamble; }
+		if (effectiveDefines && effectiveDefines[0]) { vert_parts[vert_count++] = effectiveDefines; }
+		vert_parts[vert_count++] = vertexShaderGLSL;
+	}
+	else
+	{
+		vert_parts[vert_count++] = vertShaderSrc;
+	}
 	u32 vertHandle = glCreateShader(GL_VERTEX_SHADER);
-	glShaderSource(vertHandle, 3, vertex_shader_with_version, NULL);
+	if (!vertHandle)
+	{
+		TFE_System::logWrite(LOG_ERROR, "Shader", "glCreateShader(vertex) failed");
+		return false;
+	}
+	glShaderSource(vertHandle, vert_count, vert_parts, NULL);
 	glCompileShader(vertHandle);
 
 	GLint success = 0;
 	glGetShaderiv(vertHandle, GL_COMPILE_STATUS, &success);
 	if (!success)
 	{
-		GLchar infoLog[512];
-		glGetShaderInfoLog(vertHandle, 512, NULL, infoLog);
+		GLchar infoLog[2048];
+		glGetShaderInfoLog(vertHandle, sizeof(infoLog), NULL, infoLog);
 		TFE_System::logWrite(LOG_ERROR, "Shader", "Vertex shader compilation failed:\n%s", infoLog);
+		glDeleteShader(vertHandle);
 		return false;
 	}
 
-	const GLchar *fragment_shader_with_version[3] = { version_string, defineString ? defineString : "", fragmentShaderGLSL };
+	const GLchar* frag_parts[3];
+	int frag_count = 0;
+	frag_parts[frag_count++] = version_string;
+	if (!tfe_UseGLES())
+	{
+		if (frag_preamble[0]) { frag_parts[frag_count++] = frag_preamble; }
+		if (effectiveDefines && effectiveDefines[0]) { frag_parts[frag_count++] = effectiveDefines; }
+		frag_parts[frag_count++] = fragmentShaderGLSL;
+	}
+	else
+	{
+		frag_parts[frag_count++] = fragShaderSrc;
+	}
 	u32 fragHandle = glCreateShader(GL_FRAGMENT_SHADER);
-	glShaderSource(fragHandle, 3, fragment_shader_with_version, NULL);
+	if (!fragHandle)
+	{
+		TFE_System::logWrite(LOG_ERROR, "Shader", "glCreateShader(fragment) failed");
+		glDeleteShader(vertHandle);
+		return false;
+	}
+	glShaderSource(fragHandle, frag_count, frag_parts, NULL);
 	glCompileShader(fragHandle);
 	glGetShaderiv(fragHandle, GL_COMPILE_STATUS, &success);
 	if (!success)
 	{
-		GLchar infoLog[512];
-		glGetShaderInfoLog(fragHandle, 512, NULL, infoLog);
+		GLchar infoLog[2048];
+		glGetShaderInfoLog(fragHandle, sizeof(infoLog), NULL, infoLog);
 		TFE_System::logWrite(LOG_ERROR, "Shader", "Fragment shader compilation failed:\n%s", infoLog);
+		glDeleteShader(fragHandle);
+		glDeleteShader(vertHandle);
 		return false;
 	}
 
 	m_gpuHandle = glCreateProgram();
+	if (!m_gpuHandle)
+	{
+		TFE_System::logWrite(LOG_ERROR, "Shader", "glCreateProgram() failed");
+		glDeleteShader(fragHandle);
+		glDeleteShader(vertHandle);
+		return false;
+	}
 	glAttachShader(m_gpuHandle, vertHandle);
 	glAttachShader(m_gpuHandle, fragHandle);
 	// Bind vertex attribute names to slots.
@@ -86,9 +173,13 @@ bool Shader::create(const char* vertexShaderGLSL, const char* fragmentShaderGLSL
 	glGetProgramiv(m_gpuHandle, GL_LINK_STATUS, &success);
 	if (!success)
 	{
-		GLchar infoLog[512];
-		glGetProgramInfoLog(m_gpuHandle, 512, NULL, infoLog);
+		GLchar infoLog[2048];
+		glGetProgramInfoLog(m_gpuHandle, sizeof(infoLog), NULL, infoLog);
 		TFE_System::logWrite(LOG_ERROR, "Shader", "Shader program linking failed:\n%s", infoLog);
+		glDeleteProgram(m_gpuHandle);
+		m_gpuHandle = 0;
+		glDeleteShader(fragHandle);
+		glDeleteShader(vertHandle);
 		return false;
 	}
 
@@ -96,7 +187,7 @@ bool Shader::create(const char* vertexShaderGLSL, const char* fragmentShaderGLSL
 	glDeleteShader(vertHandle);
 	glDeleteShader(fragHandle);
 
-	return m_gpuHandle != 0;
+	return true;
 }
 
 bool Shader::load(const char* vertexShaderFile, const char* fragmentShaderFile, u32 defineCount/* = 0*/, ShaderDefine* defines/* = nullptr*/, ShaderVersion version/* = SHADER_VER_COMPTABILE*/)
@@ -107,6 +198,12 @@ bool Shader::load(const char* vertexShaderFile, const char* fragmentShaderFile, 
 
 	GLSLParser::parseFile(vertexShaderFile,   ShaderGL::s_buffers[0]);
 	GLSLParser::parseFile(fragmentShaderFile, ShaderGL::s_buffers[1]);
+
+	if (ShaderGL::s_buffers[0].empty() || ShaderGL::s_buffers[1].empty())
+	{
+		TFE_System::logWrite(LOG_ERROR, "Shader", "Failed to parse shader files '%s' / '%s'", vertexShaderFile, fragmentShaderFile);
+		return false;
+	}
 
 	ShaderGL::s_vertexFile = vertexShaderFile;
 	ShaderGL::s_fragmentFile = fragmentShaderFile;
@@ -130,7 +227,12 @@ bool Shader::load(const char* vertexShaderFile, const char* fragmentShaderFile, 
 		ShaderGL::s_defineString += "\r\n";
 	}
 
-	return create(ShaderGL::s_buffers[0].data(), ShaderGL::s_buffers[1].data(), ShaderGL::s_defineString.c_str(), m_shaderVersion);
+	const bool result = create(ShaderGL::s_buffers[0].data(), ShaderGL::s_buffers[1].data(), ShaderGL::s_defineString.c_str(), m_shaderVersion);
+	if (!result)
+	{
+		TFE_System::logWrite(LOG_ERROR, "Shader", "Failed to load '%s' / '%s'", vertexShaderFile, fragmentShaderFile);
+	}
+	return result;
 }
 
 void Shader::enableClipPlanes(s32 count)
@@ -149,6 +251,10 @@ void Shader::destroy()
 
 void Shader::bind()
 {
+	if (!m_gpuHandle)
+	{
+		return;
+	}
 	TFE_RenderBackend::bindGlobalVAO();	// for macOS GL
 	glUseProgram(m_gpuHandle);
 	TFE_RenderState::enableClipPlanes(m_clipPlaneCount);
@@ -227,7 +333,7 @@ void Shader::setVariable(s32 id, ShaderVariableType type, const f32* data)
 		glUniformMatrix3fv(id, 1, false, data);
 		break;
 	case SVT_MAT4x3:
-		glUniformMatrix4x3fv(id, 1, false, data);
+		tfe_UniformMatrix4x3fv(id, 1, false, data);
 		break;
 	case SVT_MAT4x4:
 		glUniformMatrix4fv(id, 1, false, data);
@@ -260,7 +366,7 @@ void Shader::setVariableArray(s32 id, ShaderVariableType type, const f32* data, 
 		glUniformMatrix3fv(id, count, false, data);
 		break;
 	case SVT_MAT4x3:
-		glUniformMatrix4x3fv(id, count, false, data);
+		tfe_UniformMatrix4x3fv(id, count, false, data);
 		break;
 	case SVT_MAT4x4:
 		glUniformMatrix4fv(id, count, false, data);

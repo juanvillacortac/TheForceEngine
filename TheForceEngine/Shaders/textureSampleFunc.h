@@ -1,14 +1,37 @@
-uniform sampler2DArray Textures;
-uniform isamplerBuffer TextureTable;
+#include "Shaders/bufferAccess.h"
 
 uniform sampler2D Colormap;	// The color map has full RGB pre-backed in.
 uniform sampler2D Palette;
+
+#include "Shaders/lighting.h"
+
+uniform sampler2DArray Textures;
+TFE_DECLARE_IBUFFER(TextureTable);
 
 uniform uint TextureSettings;
 
 #ifdef OPT_TRUE_COLOR
 uniform vec4 TexSamplingParam;
 #endif
+
+// Fragment-only: uses gl_FragCoord (must not live in lighting.h — vertex shaders include that too).
+float ditherLightLevel(float light)
+{
+#ifdef TFE_GLES_LIGHT_DITHER
+	if (light >= 31.0)
+	{
+		return light;
+	}
+	mat4 bayer = mat4(
+		vec4(00.0, 12.0, 03.0, 15.0),
+		vec4(08.0, 04.0, 11.0, 07.0),
+		vec4(02.0, 14.0, 01.0, 13.0),
+		vec4(10.0, 06.0, 09.0, 05.0)) / 16.0;
+	ivec2 p = ivec2(gl_FragCoord.xy) & 3;
+	return floor(light + bayer[p.x][p.y]);
+#endif
+	return light;
+}
 
 vec3 fmod(vec3 x, vec3 y)
 {
@@ -93,8 +116,6 @@ vec2 bilinearDither(vec2 uv)
 }
 
 #ifdef OPT_TRUE_COLOR
-// TODO: Make this optional.
-#define OPT_MIPMAPPING 1
 
 vec3 getHalfTint(ivec2 packedColor)
 {
@@ -119,7 +140,7 @@ vec2 scaleUv(vec2 uv, int data)
 
 vec4 sampleTexture(int id, vec2 uv)
 {
-	ivec4 sampleData = texelFetch(TextureTable, id);
+	ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
 	sampleData.zw &= ivec2(32767);
 
 	uv = scaleUv(uv, sampleData.y);
@@ -142,7 +163,7 @@ vec4 sampleTexture(int id, vec2 uv)
 
 vec4 sampleTexture(int id, vec2 uv, bool sky, bool flip, bool applyFlatWarp, out vec3 tint)
 {
-	ivec4 sampleData = texelFetch(TextureTable, id);
+	ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
 	tint = TextureSettings == 0u ? vec3(1.0) : getHalfTint(sampleData.zw);
 	sampleData.zw &= ivec2(32767);
 
@@ -203,7 +224,7 @@ vec4 sampleTexture(int id, vec2 uv, bool sky, bool flip, bool applyFlatWarp, out
 
 vec4 sampleTextureClamp(int id, vec2 uv)
 {
-	ivec4 sampleData = texelFetch(TextureTable, id);
+	ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
 	sampleData.zw &= ivec2(32767);
 
 	uv = scaleUv(uv, sampleData.y);
@@ -218,7 +239,7 @@ vec4 sampleTextureClamp(int id, vec2 uv)
 
 vec4 sampleTextureClamp(int id, vec2 uv, bool opaque)
 {
-	ivec4 sampleData = texelFetch(TextureTable, id);
+	ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
 	sampleData.zw &= ivec2(32767);
 
 	uv = scaleUv(uv, sampleData.y);
@@ -246,7 +267,7 @@ vec4 sampleTextureClamp(int id, vec2 uv, bool opaque)
 #else
 float sampleTexture(int id, vec2 uv)
 {
-	ivec4 sampleData = texelFetch(TextureTable, id);
+	ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
 	sampleData.zw &= ivec2(32767);
 
 	ivec3 iuv;
@@ -267,7 +288,7 @@ float sampleTexture(int id, vec2 uv)
 
 float sampleTexture(int id, vec2 uv, bool sky, bool flip, bool applyFlatWarp)
 {
-	ivec4 sampleData = texelFetch(TextureTable, id);
+	ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
 	sampleData.zw &= ivec2(32767);
 
 	ivec3 iuv;
@@ -316,7 +337,7 @@ float sampleTexture(int id, vec2 uv, bool sky, bool flip, bool applyFlatWarp)
 
 float sampleTextureClamp(int id, vec2 uv)
 {
-	ivec4 sampleData = texelFetch(TextureTable, id);
+	ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
 	sampleData.zw &= ivec2(32767);
 
 	ivec3 iuv;
@@ -341,7 +362,7 @@ float sampleTextureClamp(int id, vec2 uv)
 
 float sampleTextureClamp(int id, vec2 uv, bool opaque)
 {
-	ivec4 sampleData = texelFetch(TextureTable, id);
+	ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
 	sampleData.zw &= ivec2(32767);
 
 	ivec3 iuv;
@@ -380,7 +401,7 @@ vec3 getAttenuatedColor(int baseColor, int light)
 vec3 getAttenuatedColorBlend(float baseColor, float light)
 {
 	int color = int(baseColor);
-	if (light < 31)
+	if (light < 31.0)
 	{
 		int l0 = int(light);
 		int l1 = min(31, l0 + 1);
@@ -437,12 +458,21 @@ vec3 generateColor(vec3 baseColor, float lightLevel)
 	return mix(mapping0, mapping1, blendFactor);
 }
 
+vec3 getAttenuatedColor(vec3 baseColor, float light)
+{
+	if (light < 31.0)
+	{
+		return generateColor(baseColor, ditherLightLevel(light));
+	}
+	return baseColor;
+}
+
 vec4 getFinalColor(vec4 baseColor, float lightLevel, float emissive)
 {
 	vec4 color = baseColor;
 	if (lightLevel < 31.0)
 	{
-		color.rgb = generateColor(baseColor.rgb, lightLevel);
+		color.rgb = generateColor(baseColor.rgb, ditherLightLevel(lightLevel));
 	}
 	color.rgb = mix(color.rgb, baseColor.rgb, emissive);
 	return color;
@@ -451,10 +481,11 @@ vec4 getFinalColor(vec4 baseColor, float lightLevel, float emissive)
 vec4 getFinalColor(float baseColor, float lightLevel, float emissive)
 {
 	vec4 color;
+	float lit = ditherLightLevel(lightLevel);
 	#ifdef OPT_COLORMAP_INTERP
-		color.rgb = getAttenuatedColorBlend(baseColor, lightLevel);
+		color.rgb = getAttenuatedColorBlend(baseColor, lit);
 	#else
-		color.rgb = getAttenuatedColor(int(baseColor), int(lightLevel));
+		color.rgb = getAttenuatedColor(int(baseColor), int(lit));
 	#endif
 	color.a = 1.0;
 	return color;

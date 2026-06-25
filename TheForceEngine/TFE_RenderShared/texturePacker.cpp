@@ -19,11 +19,16 @@
 #include <TFE_RenderBackend/shaderBuffer.h>
 #include <TFE_RenderShared/texturePacker.h>
 
+#include <TFE_RenderBackend/Win32OpenGL/tfe_gl_init.h>
+#include <TFE_RenderBackend/Win32OpenGL/tfe_gles_ext.h>
+
 #include <TFE_Settings/settings.h>
+#include <TFE_Settings/linux/tfe_gl_backend.h>
 
 #include <TFE_Asset/imageAsset.h>
 #include <TFE_Memory/chunkedArray.h>
 
+#include <list>
 #include <map>
 
 #define DEBUG_TEXTURE_ATLAS 0
@@ -66,6 +71,10 @@ namespace TFE_Jedi
 	static std::vector<TextureInfo*> s_unpackedTextures[2];
 	static ChunkedArray* s_nodePool = nullptr;
 	static MemoryRegion* s_texturePackerRegion = nullptr;
+	static bool s_useMallocNodes = false;
+	// std::list keeps node addresses stable when appending (std::vector would reallocate and
+	// invalidate all TextureNode* stored in the packer tree).
+	static std::list<TextureNode> s_mallocNodeList;
 
 	static s32 s_usedTexels = 0;
 	static s32 s_totalTexels = 0;
@@ -78,14 +87,75 @@ namespace TFE_Jedi
 
 	// Global Packer
 	static const char* c_globalTexturePackerName = "GameTextures";
-	static const s32   c_globalPageWidth = 4096;
+	static const s32   c_globalPageWidthDesktop = 4096;
+	static const s32   c_globalPageWidthHandheld = 2048;
 	static const s32   c_globalPageReserveCount = 1;
 	static TexturePacker* s_globalTexturePacker = nullptr;
+
+	static bool s_gpuUploadPending = false;
+
+	static const u32 c_textureTableTexWidth = 1024;
+	static const u32 c_textureTableTexHeight = 64;	// 1024*64 RGBA = 256 KiB (16384 Vec4i).
+
+	static bool texturepacker_useGLESBufTable()
+	{
+		return tfe_UseGLES() && tfe_UseBufferTexture2D();
+	}
+
+	static s32 texturepacker_getPageWidth()
+	{
+		if (tfe_UseHandheld() || tfe_UseGLES())
+		{
+			return c_globalPageWidthHandheld;
+		}
+		return c_globalPageWidthDesktop;
+	}
 
 	static s32 s_colorIndexStart = -1;
 		
 	TextureNode* allocateNode();
 	u8* getWritePointer(s32 page, s32 x, s32 y, u32 mipLevel = 0);
+
+	static void clearNodePool()
+	{
+		if (s_useMallocNodes)
+		{
+			s_mallocNodeList.clear();
+		}
+		else if (s_nodePool)
+		{
+			TFE_Memory::chunkedArrayClear(s_nodePool);
+		}
+	}
+
+	static bool initNodePool()
+	{
+		if (s_nodePool || s_useMallocNodes) { return true; }
+
+		if (tfe_UseHandheld() || tfe_UseGLES())
+		{
+			s_useMallocNodes = true;
+			TFE_System::logWrite(LOG_MSG, "TexturePacker", "Using heap node pool (handheld/GLES).");
+			return true;
+		}
+
+		s_texturePackerRegion = TFE_Memory::region_create("texturepacker", 8 * 1024 * 1024);
+		if (!s_texturePackerRegion)
+		{
+			TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Failed to create texture packer memory region.");
+			return false;
+		}
+		s_nodePool = TFE_Memory::createChunkedArray(sizeof(TextureNode), 256, 1, s_texturePackerRegion);
+		if (!s_nodePool)
+		{
+			TFE_Memory::region_destroy(s_texturePackerRegion);
+			s_texturePackerRegion = nullptr;
+			TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Failed to create texture packer node pool.");
+			return false;
+		}
+		TFE_System::logWrite(LOG_MSG, "TexturePacker", "Node pool ready (region allocator).");
+		return true;
+	}
 
 #if DEBUG_TEXTURE_ATLAS
 	void debug_writeOutAtlas();
@@ -131,8 +201,14 @@ namespace TFE_Jedi
 	TexturePage* allocateTexturePage(u32 pageSize)
 	{
 		TexturePage* page = (TexturePage*)malloc(sizeof(TexturePage));
+		if (!page) { return nullptr; }
 		memset(page, 0, sizeof(TexturePage));
 		page->backingMemory = (u8*)malloc(pageSize);
+		if (!page->backingMemory)
+		{
+			free(page);
+			return nullptr;
+		}
 		memset(page->backingMemory, 0, pageSize);
 		page->root = nullptr;
 		page->textureCount = 0;
@@ -142,13 +218,13 @@ namespace TFE_Jedi
 	// Initialize the texture packer once, it is persistent across levels.
 	TexturePacker* texturepacker_init(const char* name, s32 width, s32 height)
 	{
-		TexturePacker* texturePacker = (TexturePacker*)malloc(sizeof(TexturePacker));
+		TexturePacker* texturePacker = new TexturePacker();
 		if (!texturePacker) { return nullptr; }
 
-		if (!s_nodePool)
+		if (!initNodePool())
 		{
-			s_texturePackerRegion = TFE_Memory::region_create("game", 8 * 1024 * 1024);
-			s_nodePool = TFE_Memory::createChunkedArray(sizeof(TextureNode), 256, 1, s_texturePackerRegion);
+			delete texturePacker;
+			return nullptr;
 		}
 				
 		// Initialize with one page.
@@ -192,6 +268,13 @@ namespace TFE_Jedi
 		}
 		texturePacker->pageSize *= texturePacker->bytesPerTexel;
 		texturePacker->pages[0] = allocateTexturePage(texturePacker->pageSize);
+		if (!texturePacker->pages[0])
+		{
+			TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Failed to allocate %u byte texture page.", texturePacker->pageSize);
+			texturepacker_destroy(texturePacker);
+			return nullptr;
+		}
+		TFE_System::logWrite(LOG_MSG, "TexturePacker", "Page backing allocated (%u bytes).", texturePacker->pageSize);
 
 		texturePacker->textureTable = (Vec4i*)malloc(sizeof(Vec4i) * MAX_TEXTURE_COUNT);	// 256Kb (count can be up to 64K).
 		if (!texturePacker->textureTable)
@@ -200,15 +283,9 @@ namespace TFE_Jedi
 			return nullptr;
 		}
 
-		ShaderBufferDef textureTableDef =
-		{
-			4,				// 1, 2, 4 channels (R, RG, RGBA)
-			sizeof(s32),	// 1, 2, 4 bytes (u8; s16,u16; s32,u32,f32)
-			BUF_CHANNEL_INT
-		};
-		texturePacker->textureTableGPU.create(MAX_TEXTURE_COUNT, textureTableDef, true, nullptr);
-
 		strncpy(texturePacker->name, name, 64);
+		TFE_System::logWrite(LOG_MSG, "TexturePacker", "Initialized '%s' atlas %dx%d (%u bytes/page, %u bpp).",
+			name, width, height, texturePacker->pageSize, texturePacker->bytesPerTexel);
 		return texturePacker;
 	}
 
@@ -218,17 +295,23 @@ namespace TFE_Jedi
 		if (!texturePacker) { return; }
 
 		TFE_RenderBackend::freeTexture(texturePacker->texture);
-		texturePacker->textureTableGPU.destroy();
+		texturePacker->texture = nullptr;
 		free(texturePacker->textureTable);
-		for (s32 p = 0; p < texturePacker->pageCount; p++)
+		texturePacker->textureTable = nullptr;
+		if (texturePacker->pages)
 		{
-			free(texturePacker->pages[p]->backingMemory);
+			for (s32 p = 0; p < texturePacker->pageCount; p++)
+			{
+				if (texturePacker->pages[p])
+				{
+					free(texturePacker->pages[p]->backingMemory);
+					free(texturePacker->pages[p]);
+				}
+			}
+			free(texturePacker->pages);
+			texturePacker->pages = nullptr;
 		}
-		free(texturePacker->pages);
-		free(texturePacker);
-
-		TFE_Memory::region_destroy(s_texturePackerRegion);
-		s_texturePackerRegion = nullptr;
+		delete texturePacker;
 	}
 		
 	void texturepacker_reserveCommitedPages(TexturePacker* texturePacker)
@@ -256,7 +339,7 @@ namespace TFE_Jedi
 			s_texturePacker->pages[p]->textureCount = 0;
 		}
 
-		TFE_Memory::chunkedArrayClear(s_nodePool);
+		clearNodePool();
 		s_textureDataMap.clear();
 		s_waxDataMap.clear();
 		s_texInfoPool.clear();
@@ -282,6 +365,7 @@ namespace TFE_Jedi
 		if (!s_root)
 		{
 			newNode = allocateNode();
+			if (!newNode) { return nullptr; }
 			newNode->child[0] = nullptr;
 			newNode->child[1] = nullptr;
 			newNode->rect = {0u, 0u, (u32)s_texturePacker->width, (u32)s_texturePacker->height};
@@ -291,6 +375,8 @@ namespace TFE_Jedi
 			s_nodes.push_back(newNode);
 			return newNode;
 		}
+
+		if (!cur) { return nullptr; }
 
 		// We are not a leaf...
 		if (cur->child[0])
@@ -320,6 +406,7 @@ namespace TFE_Jedi
 			// Split the node.
 			cur->child[0] = allocateNode();
 			cur->child[1] = allocateNode();
+			if (!cur->child[0] || !cur->child[1]) { return nullptr; }
 
 			// Push nodes so they can be deleted later.
 			s_nodes.push_back(cur->child[0]);
@@ -765,6 +852,11 @@ namespace TFE_Jedi
 
 	void packNode(const TextureNode* node, const TextureData* texData, Vec4i* tableEntry, s32 paddingX, s32 paddingY, s32 mipCount, const TextureData* hdSrc, s32 frameIndex)
 	{
+		if (!texData || !texData->image)
+		{
+			TFE_System::logWrite(LOG_WARNING, "TexturePacker", "Skipping texture pack for null image data.");
+			return;
+		}
 		// Copy the texture into place.
 		const s32 offsetX = paddingX / 2;
 		const s32 offsetY = paddingY / 2;
@@ -1042,8 +1134,13 @@ namespace TFE_Jedi
 	bool insertTexture(TextureData* tex, bool packHdTextures, TextureData* baseFrame, s32 frameIndex)
 	{
 		if (!tex || isTextureInMap(tex)) { return true; }
+		if (!tex->image)
+		{
+			TFE_System::logWrite(LOG_WARNING, "TexturePacker", "Skipping texture with null image.");
+			return true;
+		}
 
-		const s32 scale = packHdTextures ? baseFrame->scaleFactor : 1;
+		const s32 scale = (packHdTextures && baseFrame) ? baseFrame->scaleFactor : 1;
 		const s32 w = tex->width  * scale;
 		const s32 h = tex->height * scale;
 
@@ -1138,7 +1235,17 @@ namespace TFE_Jedi
 
 	TextureNode* allocateNode()
 	{
+		if (s_useMallocNodes)
+		{
+			s_mallocNodeList.emplace_back();
+			TextureNode* node = &s_mallocNodeList.back();
+			memset(node, 0, sizeof(TextureNode));
+			return node;
+		}
+
+		if (!s_nodePool) { return nullptr; }
 		TextureNode* node = (TextureNode*)TFE_Memory::allocFromChunkedArray(s_nodePool);
+		if (!node) { return nullptr; }
 		memset(node, 0, sizeof(TextureNode));
 		return node;
 	}
@@ -1146,7 +1253,15 @@ namespace TFE_Jedi
 	// Begin the packing process, this clears out the texture packer.
 	bool texturepacker_begin(TexturePacker* texturePacker)
 	{
-		if (!texturePacker) { return false; }
+		if (!texturePacker || !texturePacker->pages) { return false; }
+		s_texturePacker = texturePacker;
+
+		if (!initNodePool())
+		{
+			TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Node pool init failed in begin().");
+			return false;
+		}
+
 		if (s_texInfoPool.capacity() == 0)
 		{
 			s_texInfoPool.reserve(MAX_TEXTURE_COUNT);
@@ -1182,12 +1297,21 @@ namespace TFE_Jedi
 			texturePacker->pageSize *= bytesPerTexel;
 
 			// Realloc the pages.
-			for (s32 p = 0; p < s_texturePacker->pageCount; p++)
+			for (s32 p = 0; p < texturePacker->pageCount; p++)
 			{
-				TexturePage* page = s_texturePacker->pages[p];
+				TexturePage* page = texturePacker->pages[p];
 				if (!page) { continue; }
-				page->backingMemory = (u8*)realloc(page->backingMemory, texturePacker->pageSize);
-				memset(page->backingMemory, 0, texturePacker->pageSize);
+				u8* backing = (u8*)realloc(page->backingMemory, texturePacker->pageSize);
+				if (!backing && texturePacker->pageSize > 0)
+				{
+					TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Failed to realloc page %d to %u bytes.", p, texturePacker->pageSize);
+					return false;
+				}
+				page->backingMemory = backing;
+				if (backing)
+				{
+					memset(backing, 0, texturePacker->pageSize);
+				}
 			}
 
 			// Free the existing texture.
@@ -1195,34 +1319,96 @@ namespace TFE_Jedi
 			texturePacker->texture = nullptr;
 		}
 
-		s_texturePacker = texturePacker;
 		s_texturePacker->texturesPacked = 0;
 		s_texturePacker->trueColor = trueColor;
 		s_texturePacker->bytesPerTexel = bytesPerTexel;
 		// Clear pages.
 		for (s32 p = 0; p < s_texturePacker->pageCount; p++)
 		{
+			if (!s_texturePacker->pages[p]) { continue; }
 			s_texturePacker->pages[p]->root = nullptr;
 			s_texturePacker->pages[p]->textureCount = 0;
 		}
 
-		TFE_Memory::chunkedArrayClear(s_nodePool);
+		clearNodePool();
 		s_textureDataMap.clear();
 		s_waxDataMap.clear();
 		s_texInfoPool.clear();
 
 		// Insert the parent that covers all of the available space.
 		s_root = nullptr;
-		insertNode(nullptr, nullptr, 0, 0);
+		if (!insertNode(nullptr, nullptr, 0, 0) || !s_root)
+		{
+			TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Failed to initialize texture packer root node.");
+			return false;
+		}
+		if (!s_texturePacker->pages[0])
+		{
+			TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Missing page 0 after root node init.");
+			return false;
+		}
 		s_texturePacker->pages[0]->root = s_root;
 		return true;
 	}
 
-	// Commit the final packing to GPU memory.
+	// Commit CPU packing; GPU upload happens in texturepacker_flushGpu() on the render path.
 	void texturepacker_commit()
 	{
-		// Update the texture table.
-		s_texturePacker->textureTableGPU.update(s_texturePacker->textureTable, sizeof(Vec4i) * s_texturePacker->texturesPacked);
+		if (!s_texturePacker || !s_texturePacker->textureTable) { return; }
+		s_texturePacker->gpuBuffersReady = false;
+		s_gpuUploadPending = true;
+	}
+
+	bool texturepacker_flushGpu()
+	{
+		if (!s_texturePacker || !s_texturePacker->textureTable) { return false; }
+		if (!s_gpuUploadPending && s_texturePacker->gpuBuffersReady) { return true; }
+
+		if (!tfe_EnsureGLContextCurrent())
+		{
+			TFE_System::logWrite(LOG_ERROR, "TexturePacker", "GL context not current for GPU upload.");
+			return false;
+		}
+		if (!tfe_EnsureGLESProcs())
+		{
+			TFE_System::logWrite(LOG_ERROR, "TexturePacker", "GLES proc table incomplete for GPU upload.");
+			return false;
+		}
+
+		if (texturepacker_useGLESBufTable())
+		{
+			if (!s_texturePacker->textureTableTex.getHandle())
+			{
+				TFE_System::logWrite(LOG_MSG, "TexturePacker", "Creating GLES texture table (%ux%u)...",
+					c_textureTableTexWidth, c_textureTableTexHeight);
+				if (!s_texturePacker->textureTableTex.create(c_textureTableTexWidth, c_textureTableTexHeight, TEX_RGBA8, false, MAG_FILTER_NONE))
+				{
+					TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Failed to create GLES texture table.");
+					return false;
+				}
+			}
+			const size_t tableBytes = sizeof(Vec4i) * s_texturePacker->texturesPacked;
+			s_texturePacker->textureTableTex.update(s_texturePacker->textureTable, tableBytes);
+		}
+		else
+		{
+			if (!s_texturePacker->textureTableGPU.isInitialized())
+			{
+				ShaderBufferDef textureTableDef =
+				{
+					4,
+					sizeof(s32),
+					BUF_CHANNEL_INT
+				};
+				TFE_System::logWrite(LOG_MSG, "TexturePacker", "Creating GPU texture table buffer...");
+				if (!s_texturePacker->textureTableGPU.create(MAX_TEXTURE_COUNT, textureTableDef, true, nullptr))
+				{
+					TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Failed to create GPU texture table buffer.");
+					return false;
+				}
+			}
+			s_texturePacker->textureTableGPU.update(s_texturePacker->textureTable, sizeof(Vec4i) * s_texturePacker->texturesPacked);
+		}
 
 		// Create the texture if one doesn't exist or we need more layers.
 		if (!s_texturePacker->texture || s_texturePacker->pageCount > (s32)s_texturePacker->texture->getLayers())
@@ -1231,12 +1417,16 @@ namespace TFE_Jedi
 			{
 				TFE_RenderBackend::freeTexture(s_texturePacker->texture);
 			}
-			// Allocate at least 2 layers.
 			s_texturePacker->texture = TFE_RenderBackend::createTextureArray(s_texturePacker->width, s_texturePacker->height,
 				max(2, s_texturePacker->pageCount), s_texturePacker->bytesPerTexel, s_texturePacker->mipCount);
+			if (!s_texturePacker->texture || !s_texturePacker->texture->getHandle())
+			{
+				TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Failed to create GPU texture array (%ux%u, %d layers).",
+					s_texturePacker->width, s_texturePacker->height, max(2, s_texturePacker->pageCount));
+				return false;
+			}
 		}
-				
-		// Then update each page.
+
 		u32 width  = s_texturePacker->width;
 		u32 height = s_texturePacker->height;
 		u32 bytesPerTexel = s_texturePacker->bytesPerTexel;
@@ -1252,10 +1442,27 @@ namespace TFE_Jedi
 			height >>= 1;
 		}
 
-		// Write out the debug atlas if enabled.
+		s_texturePacker->gpuBuffersReady = true;
+		s_gpuUploadPending = false;
+		TFE_System::logWrite(LOG_MSG, "TexturePacker", "GPU atlas upload complete (%d textures).", s_texturePacker->texturesPacked);
+
 		#if DEBUG_TEXTURE_ATLAS
 			debug_writeOutAtlas();
 		#endif
+		return true;
+	}
+
+	void texturepacker_bindTextureTable(s32 slot)
+	{
+		if (!s_texturePacker) { return; }
+		if (texturepacker_useGLESBufTable() && s_texturePacker->textureTableTex.getHandle())
+		{
+			s_texturePacker->textureTableTex.bind(slot);
+		}
+		else
+		{
+			s_texturePacker->textureTableGPU.bind(slot);
+		}
 	}
 		
 	s32 texturepacker_pack(TextureListCallback getList, AssetPool pool)
@@ -1280,6 +1487,7 @@ namespace TFE_Jedi
 					case TEXINFO_DF_TEXTURE_DATA:
 					case TEXINFO_DF_DELT_TEX:
 					{
+						if (!list[i].texData) { break; }
 						if (list[i].texData->uvWidth == BM_ANIMATED_TEXTURE)
 						{
 							AnimatedTexture* animTex = (AnimatedTexture*)list[i].texData->image;
@@ -1337,10 +1545,15 @@ namespace TFE_Jedi
 
 			// 4. Insert each texture into the tree, adding pages as needed.
 			s_currentPage = s_texturePacker->reservedPages;
-			if (s_currentPage >= s_texturePacker->pageCount)
-			{
-				s_texturePacker->pages[s_texturePacker->pageCount] = allocateTexturePage(s_texturePacker->pageSize);
-				s_texturePacker->pageCount++;
+				if (s_currentPage >= s_texturePacker->pageCount)
+				{
+					s_texturePacker->pages[s_texturePacker->pageCount] = allocateTexturePage(s_texturePacker->pageSize);
+					if (!s_texturePacker->pages[s_texturePacker->pageCount])
+					{
+						TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Failed to allocate texture page %d.", s_texturePacker->pageCount);
+						return s_texturePacker->texturesPacked;
+					}
+					s_texturePacker->pageCount++;
 
 				s_root = nullptr;
 				insertNode(nullptr, nullptr, 0, 0);
@@ -1371,6 +1584,7 @@ namespace TFE_Jedi
 					{
 						case TEXINFO_DF_TEXTURE_DATA:
 						{
+							if (!unpackedList[i]->texData) { break; }
 							if (unpackedList[i]->texData->uvWidth == BM_ANIMATED_TEXTURE)
 							{
 								AnimatedTexture* animTex = (AnimatedTexture*)unpackedList[i]->texData->image;
@@ -1389,6 +1603,7 @@ namespace TFE_Jedi
 						} break;
 						case TEXINFO_DF_DELT_TEX:
 						{
+							if (!unpackedList[i]->texData) { break; }
 							if (!insertDeltTexture(unpackedList[i]->texData))
 							{
 								s_unpackedTextures[s_unpackedBuffer].push_back(unpackedList[i]);
@@ -1415,10 +1630,15 @@ namespace TFE_Jedi
 				if (!s_unpackedTextures[s_unpackedBuffer].empty())
 				{
 					s_currentPage++;
-					if (s_currentPage >= s_texturePacker->pageCount)
+				if (s_currentPage >= s_texturePacker->pageCount)
+				{
+					s_texturePacker->pages[s_texturePacker->pageCount] = allocateTexturePage(s_texturePacker->pageSize);
+					if (!s_texturePacker->pages[s_texturePacker->pageCount])
 					{
-						s_texturePacker->pages[s_texturePacker->pageCount] = allocateTexturePage(s_texturePacker->pageSize);
-						s_texturePacker->pageCount++;
+						TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Failed to allocate texture page %d.", s_texturePacker->pageCount);
+						return s_texturePacker->texturesPacked;
+					}
+					s_texturePacker->pageCount++;
 
 						s_root = nullptr;
 						insertNode(nullptr, nullptr, 0, 0);
@@ -1466,7 +1686,7 @@ namespace TFE_Jedi
 		s_unpackedBuffer = 0;
 		s_currentPage = 0;
 
-		TFE_Memory::chunkedArrayClear(s_nodePool);
+		clearNodePool();
 		s_textureDataMap.clear();
 		s_waxDataMap.clear();
 		s_texInfoPool.clear();
@@ -1529,15 +1749,42 @@ namespace TFE_Jedi
 	{
 		if (!s_globalTexturePacker)
 		{
-			s_globalTexturePacker = texturepacker_init(c_globalTexturePackerName, c_globalPageWidth, c_globalPageWidth);
-			texturepacker_begin(s_globalTexturePacker);
+			const s32 pageWidth = texturepacker_getPageWidth();
+			TFE_System::logWrite(LOG_MSG, "TexturePacker", "Creating global packer (%dx%d)...", pageWidth, pageWidth);
+			s_globalTexturePacker = texturepacker_init(c_globalTexturePackerName, pageWidth, pageWidth);
+			if (!s_globalTexturePacker)
+			{
+				TFE_System::logWrite(LOG_ERROR, "TexturePacker", "Global texture packer init failed.");
+				return nullptr;
+			}
+			if (!texturepacker_begin(s_globalTexturePacker))
+			{
+				texturepacker_destroy(s_globalTexturePacker);
+				s_globalTexturePacker = nullptr;
+				return nullptr;
+			}
 		}
 		return s_globalTexturePacker;
 	}
 
 	void texturepacker_freeGlobal()
 	{
-		texturepacker_destroy(s_globalTexturePacker);
-		s_globalTexturePacker = nullptr;
+		if (s_globalTexturePacker)
+		{
+			texturepacker_destroy(s_globalTexturePacker);
+			s_globalTexturePacker = nullptr;
+		}
+		if (s_nodePool)
+		{
+			TFE_Memory::freeChunkedArray(s_nodePool);
+			s_nodePool = nullptr;
+		}
+		if (s_texturePackerRegion)
+		{
+			TFE_Memory::region_destroy(s_texturePackerRegion);
+			s_texturePackerRegion = nullptr;
+		}
+		s_mallocNodeList.clear();
+		s_useMallocNodes = false;
 	}
 }

@@ -919,7 +919,7 @@ namespace TFE_DarkForces
 		ScreenRect* screenRect = vfb_getScreenRect(VFB_RECT_UI);
 
 		// TFE Note: drawing the HUD when GPU rendering is enabled is a bit different, since we can just draw all of the items scaled.
-		if (TFE_Jedi::getSubRenderer() == TSR_CLASSIC_GPU)
+		if (TFE_Jedi::renderer_isGpuActive())
 		{
 			hud_drawGpu();
 			return;

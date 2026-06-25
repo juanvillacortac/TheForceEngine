@@ -1,3 +1,5 @@
+#include "Shaders/bufferAccess.h"
+
 uniform sampler2D Colormap;
 #include "Shaders/lighting.h"
 #ifdef OPT_TRUE_COLOR
@@ -15,7 +17,7 @@ uniform mat3 ModelMtx;
 uniform vec3 ModelPos;
 uniform uvec2 PortalInfo;
 
-uniform samplerBuffer DrawListPlanes;
+TFE_DECLARE_FBUFFER(DrawListPlanes);
 
 // Vertex Data
 in vec3 vtx_pos;
@@ -23,10 +25,14 @@ in vec3 vtx_nrm;
 in vec2 vtx_uv;
 in vec4 vtx_color;
 
-out float gl_ClipDistance[8];
+#include "Shaders/clipDistance.h"
 out vec2 Frag_Uv;
 out vec3 Frag_WorldPos;
+#ifdef GL_ES
+flat out float Frag_Light;
+#else
 noperspective out float Frag_Light;
+#endif
 flat out float Frag_ModelY;
 #ifdef OPT_TRUE_COLOR
 flat out vec4 Frag_Color;
@@ -75,12 +81,12 @@ void main()
 	unpackPortalInfo(PortalInfo.x, portalOffset, portalCount);
 	for (int i = 0; i < int(portalCount) && i < 8; i++)
 	{
-		vec4 plane = texelFetch(DrawListPlanes, int(portalOffset) + i);
-		gl_ClipDistance[i] = dot(vec4(worldPos.xyz, 1.0), plane);
+		vec4 plane = tfe_fetchFBuffer(DrawListPlanes, int(portalOffset) + i);
+		TFE_CLIP_SET(i, dot(vec4(worldPos.xyz, 1.0), plane));
 	}
 	for (int i = int(portalCount); i < 8; i++)
 	{
-		gl_ClipDistance[i] = 1.0;
+		TFE_CLIP_SET(i, 1.0);
 	}
 
 	// Lighting
@@ -108,7 +114,7 @@ void main()
 			if (worldAmbient < 31.0 || cameraLightSource > 0.0)
 			{
 				float lightSource = getLightRampValue(z, worldAmbient);
-				if (lightSource > 0)
+				if (lightSource > 0.0)
 				{
 					light += lightSource;
 				}

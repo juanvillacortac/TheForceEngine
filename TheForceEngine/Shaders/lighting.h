@@ -1,3 +1,15 @@
+#ifndef TFE_LIGHTING_INCLUDED
+#define TFE_LIGHTING_INCLUDED
+
+float tfe_readLightRampG(int depthIndex)
+{
+#ifdef TFE_GLES_SMOOTH_LIGHTRAMP
+	return texelFetch(Colormap, ivec2(depthIndex, 0), 0).g * 255.0 / 8.23;
+#else
+	return texelFetch(Colormap, ivec2(depthIndex, 0), 0).g * 255.0;
+#endif
+}
+
 float getDepthAttenuation(float z, float ambient, float baseLight, float lightOffset)
 {
 #ifdef OPT_COLORMAP_INTERP // Smooth out the attenuation.
@@ -20,13 +32,24 @@ float getLightRampValue(float z, float worldAmbient)
 	float d0 = base;
 	float d1 = min(127.0, base + 1.0);
 	float blendFactor = fract(depthScaled);
-	float lightSource0 = 31.0 - (texture(Colormap, vec2(d0 / 256.0, 0.0)).g*255.0 / 8.23 + worldAmbient);
-	float lightSource1 = 31.0 - (texture(Colormap, vec2(d1 / 256.0, 0.0)).g*255.0 / 8.23 + worldAmbient);
-	float lightSource = mix(lightSource0, lightSource1, blendFactor);
+	float ramp0 = tfe_readLightRampG(int(d0));
+	float ramp1 = tfe_readLightRampG(int(d1));
+	float lightSource = 31.0 - (mix(ramp0, ramp1, blendFactor) + worldAmbient);
 #else // Vanilla style light ramp.
-	float depthScaled = min(floor(z * 4.0), 127.0);
-	float lightSource = 31.0 - (texture(Colormap, vec2(depthScaled / 256.0, 0.0)).g*255.0 + worldAmbient);
+	float depthScaledF = min(z * 4.0, 127.0);
+	float depthScaled = floor(depthScaledF);
+#ifdef TFE_GLES_SMOOTH_LIGHTRAMP
+	float d1 = min(127.0, depthScaled + 1.0);
+	float blendFactor = fract(depthScaledF);
+	float ramp0 = tfe_readLightRampG(int(depthScaled));
+	float ramp1 = tfe_readLightRampG(int(d1));
+	float lightSource = 31.0 - (mix(ramp0, ramp1, blendFactor) + worldAmbient);
+#else
+	float ramp = tfe_readLightRampG(int(depthScaled));
+	float lightSource = 31.0 - (ramp + worldAmbient);
+#endif
 #endif
 	return lightSource;
 }
 
+#endif // TFE_LIGHTING_INCLUDED

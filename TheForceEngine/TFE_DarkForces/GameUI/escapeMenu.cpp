@@ -2,9 +2,11 @@
 
 #include "escapeMenu.h"
 #include "delt.h"
+#include "menu.h"
 #include "uiDraw.h"
 #include <TFE_DarkForces/agent.h>
 #include <TFE_DarkForces/util.h>
+#include <TFE_DarkForces/Landru/lpalette.h>
 #include <TFE_DarkForces/hud.h>
 #include <TFE_DarkForces/config.h>
 #include <TFE_Game/reticle.h>
@@ -12,6 +14,7 @@
 #include <TFE_Settings/settings.h>
 #include <TFE_Input/inputMapping.h>
 #include <TFE_RenderBackend/renderBackend.h>
+#include <TFE_DarkForces/mission.h>
 #include <TFE_RenderShared/texturePacker.h>
 #include <TFE_Jedi/Renderer/RClassic_GPU/screenDrawGPU.h>
 #include <TFE_Jedi/Renderer/jediRenderer.h>
@@ -75,7 +78,8 @@ namespace TFE_DarkForces
 	};
 	static const Vec2i c_escButtonDim = { 96, 16 };
 	static Vec4i s_confirmButtonRange[4];
-	static u32 s_escMenuPalette[256];
+	static u8 s_escMenuPaletteRaw[768];
+	static LPalette* s_escLpalette = nullptr;
 
 	struct EscapeMenuState
 	{
@@ -100,6 +104,20 @@ namespace TFE_DarkForces
 		LangHotkeys* langKeys;
 	};
 	static EscapeMenuState s_emState = {};
+	static s32 s_escHandheldFocus = ESC_BTN_RETURN;
+
+	static s32 escMenu_getHighlightButton()
+	{
+		if (menu_isHandheld())
+		{
+			return s_escHandheldFocus;
+		}
+		if (s_emState.buttonPressed >= 0 && s_emState.buttonHover)
+		{
+			return s_emState.buttonPressed;
+		}
+		return -1;
+	}
 
 	void escMenu_resetCursor();
 	void escMenu_handleMousePosition();
@@ -121,6 +139,11 @@ namespace TFE_DarkForces
 
 		// Free memory
 		freeOffScreenBuffer(s_emState.framebufferCopy);
+		if (s_escLpalette)
+		{
+			lpalette_free(s_escLpalette);
+			s_escLpalette = nullptr;
+		}
 
 		// Clear State.
 		s_emState = {};
@@ -152,6 +175,8 @@ namespace TFE_DarkForces
 				s_emState.escMenuFrameCount = getFramesFromAnim("escmenu.anim", &s_emState.escMenuFrames);
 				s_emState.confirmMenuFrameCount = getFramesFromAnim("yesno.anim", &s_emState.confirmMenuFrames);
 				loadPaletteFromPltt("menu.pltt", paletteBuffer);
+				s_escLpalette = lpalette_load("menu");
+			memcpy(s_escMenuPaletteRaw, paletteBuffer, sizeof(s_escMenuPaletteRaw));
 			TFE_Paths::removeLastArchive();
 
 			// Adjust button ranges since different languages seem to move the menu around for some reason...
@@ -174,12 +199,7 @@ namespace TFE_DarkForces
 			// TFE
 			TFE_Jedi::renderer_addHudTextureCallback(escapeMenu_getTextures);
 
-			// convert palette to argb entries now since we don't need the raw format anywhere.
-			u8* pal = paletteBuffer;
-			for (u32 i = 0; i < 256; i++, pal += 3)
-			{
-				s_escMenuPalette[i] = 0xffu << 24 | ((u32)pal[0]) | ((u32)(pal[1]) << 8) | ((u32)pal[2] << 16);
-			}
+			// PLTT files store VGA 8-bit color bytes — use bpp 8 for GPU HUD atlas conversion.
 			texturepacker_setConversionPalette(0, 8, paletteBuffer);
 		}
 	}
@@ -189,7 +209,7 @@ namespace TFE_DarkForces
 		u32 dispWidth, dispHeight;
 		vfb_getResolution(&dispWidth, &dispHeight);
 
-		if (TFE_Jedi::getSubRenderer() == TSR_CLASSIC_GPU)
+		if (TFE_Jedi::renderer_isGpuActive())
 		{
 			// 1. Create a render target to hold the frame.
 			u32 prevWidth = 0, prevHeight = 0;
@@ -204,12 +224,13 @@ namespace TFE_DarkForces
 				s_emState.renderTarget = TFE_RenderBackend::createRenderTarget(dispWidth, dispHeight);
 			}
 
-			// 2. Blit current frame to the new render target.
+			// Copy the current GPU frame directly — avoid a mid-frame swap (causes a black flash).
 			TFE_Jedi::endRender();
-			TFE_RenderBackend::swap(true);
-
-			TFE_RenderBackend::copyBackbufferToRenderTarget(s_emState.renderTarget);
-			TFE_RenderBackend::unbindRenderTarget();
+			RenderTargetHandle virtRt = TFE_RenderBackend::getVirtualRenderTarget();
+			if (virtRt)
+			{
+				TFE_RenderBackend::copyRenderTarget(s_emState.renderTarget, virtRt);
+			}
 		}
 		else // Software renderer code.
 		{
@@ -249,6 +270,7 @@ namespace TFE_DarkForces
 		escapeMenu_copyBackground(framebuffer, palette);
 
 		escMenu_resetCursor();
+		s_escHandheldFocus = ESC_BTN_RETURN;
 		s_emState.buttonPressed = -1;
 		s_emState.buttonHover = false;
 		s_emState.confirmState = CONFIRM_STATE_NONE;
@@ -308,27 +330,10 @@ namespace TFE_DarkForces
 		const fixed16_16 yScale = vfb_getYScale();
 		const s32 xOffset = vfb_getWidescreenOffset();
 
-		// Draw the background.
+		// Draw the background — the captured RT matches game resolution; use full UVs.
 		if (drawBackground)
 		{
-			if (xOffset)
-			{
-				screenGPU_addImageQuad(0, 0, dispWidth, dispHeight, (TextureGpu*)TFE_RenderBackend::getRenderTargetTexture(s_emState.renderTarget));
-			}
-			else
-			{
-				// Adjust the UV coordinates to stretch 4:3 to the full size.
-				DisplayInfo displayInfo;
-				TFE_RenderBackend::getDisplayInfo(&displayInfo);
-
-				s32 offsetWidth = displayInfo.height * 4 / 3;
-				s32 imgOffset = (displayInfo.width - offsetWidth) / 2;
-
-				f32 offset = f32(imgOffset) / f32(displayInfo.width);
-				f32 u0 = offset;
-				f32 u1 = 1.0f - offset;
-				screenGPU_addImageQuad(0, 0, dispWidth, dispHeight, u0, u1, (TextureGpu*)TFE_RenderBackend::getRenderTargetTexture(s_emState.renderTarget));
-			}
+			screenGPU_addImageQuad(0, 0, dispWidth, dispHeight, (TextureGpu*)TFE_RenderBackend::getRenderTargetTexture(s_emState.renderTarget));
 		}
 
 		// Draw the menu.
@@ -336,12 +341,13 @@ namespace TFE_DarkForces
 		{
 			screenGPU_blitTextureScaled(&s_emState.escMenuFrames[0].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
 
+			const s32 highlight = escMenu_getHighlightButton();
 			if (s_levelComplete)
 			{
 				// Attempt to clean up the button positions, note this is only a problem at non-vanilla resolutions.
 				fixed16_16 yOffset = (dispHeight == 200 || dispHeight == 400) ? 0 : round16(yScale / 2);
 
-				if (s_emState.buttonPressed == ESC_BTN_ABORT && s_emState.buttonHover)
+				if (highlight == ESC_BTN_ABORT)
 				{
 					screenGPU_blitTextureScaled(&s_emState.escMenuFrames[3].texture, nullptr, intToFixed16(xOffset), yOffset, xScale, yScale, 31);
 				}
@@ -350,39 +356,42 @@ namespace TFE_DarkForces
 					screenGPU_blitTextureScaled(&s_emState.escMenuFrames[4].texture, nullptr, intToFixed16(xOffset), yOffset, xScale, yScale, 31);
 				}
 			}
-			if ((s_emState.buttonPressed > ESC_BTN_ABORT || (s_emState.buttonPressed == ESC_BTN_ABORT && !s_levelComplete)) && s_emState.buttonHover)
+			if ((highlight > ESC_BTN_ABORT || (highlight == ESC_BTN_ABORT && !s_levelComplete)) && highlight >= 0)
 			{
 				// Attempt to clean up the button positions, note this is only a problem at non-vanilla resolutions.
 				fixed16_16 yOffset = (dispHeight == 200 || dispHeight == 400) ? 0 : round16(yScale / 2);
-				yOffset = min(yOffset, 3 - s_emState.buttonPressed);
+				yOffset = min(yOffset, 3 - highlight);
 
 				// Draw the highlight button
 				const s32 highlightIndices[] = { 1, 7, 9, 5 };
-				screenGPU_blitTextureScaled(&s_emState.escMenuFrames[highlightIndices[s_emState.buttonPressed]].texture, nullptr, intToFixed16(xOffset), yOffset, xScale, yScale, 31);
+				screenGPU_blitTextureScaled(&s_emState.escMenuFrames[highlightIndices[highlight]].texture, nullptr, intToFixed16(xOffset), yOffset, xScale, yScale, 31);
 			}
 		}
 		// Confirmation.
 		else if (s_emState.confirmState == CONFIRM_STATE_ABORT)
 		{
+			const s32 highlight = escMenu_getHighlightButton();
 			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[CONFIRM_ABORT_BG].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
 		}
 		else if (s_emState.confirmState == CONFIRM_STATE_NEXT)
 		{
+			const s32 highlight = escMenu_getHighlightButton();
 			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[CONFIRM_NEXT_BG].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
 		}
 		else if (s_emState.confirmState == CONFIRM_STATE_QUIT)
 		{
+			const s32 highlight = escMenu_getHighlightButton();
 			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[CONFIRM_QUIT_BG].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_YES ? CONFIRM_QUIT_YESBTN_DOWN : CONFIRM_QUIT_YESBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_NO ? CONFIRM_QUIT_NOBTN_DOWN : CONFIRM_QUIT_NOBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_QUIT_YESBTN_DOWN : CONFIRM_QUIT_YESBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_QUIT_NOBTN_DOWN : CONFIRM_QUIT_NOBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
 		}
 
 		// Draw the mouse.
-		if (drawMouse)
+		if (drawMouse && menu_shouldDrawCursor())
 		{
 			screenGPU_blitTextureScaled(&s_cursor.texture, nullptr, intToFixed16(s_emState.cursorPos.x), intToFixed16(s_emState.cursorPos.z), xScale, yScale, 31);
 		}
@@ -391,7 +400,7 @@ namespace TFE_DarkForces
 	void escapeMenu_draw(JBool drawMouse, JBool drawBackground)
 	{
 		// TFE Note: handle GPU drawing differently, though the UI update is exactly the same.
-		if (TFE_Jedi::getSubRenderer() == TSR_CLASSIC_GPU)
+		if (TFE_Jedi::renderer_isGpuActive())
 		{
 			escapeMenu_drawGpu(drawMouse, drawBackground);
 			return;
@@ -414,46 +423,53 @@ namespace TFE_DarkForces
 				// Draw the menu background.
 				blitDeltaFrame(&s_emState.escMenuFrames[0], 0, 0, s_emState.framebuffer);
 
+				const s32 highlight = escMenu_getHighlightButton();
 				if (s_levelComplete)
 				{
-					if (s_emState.buttonPressed == ESC_BTN_ABORT && s_emState.buttonHover)
+					if (highlight == ESC_BTN_ABORT)
 					{
 						blitDeltaFrame(&s_emState.escMenuFrames[3], 0, 0, s_emState.framebuffer);
 					}
 					else
 					{
-						blitDeltaFrame(&s_emState.escMenuFrames[4], 0, 0, s_emState.framebuffer);
+					 blitDeltaFrame(&s_emState.escMenuFrames[4], 0, 0, s_emState.framebuffer);
 					}
 				}
-				if ((s_emState.buttonPressed > ESC_BTN_ABORT || (s_emState.buttonPressed == ESC_BTN_ABORT && !s_levelComplete)) && s_emState.buttonHover)
+				if ((highlight > ESC_BTN_ABORT || (highlight == ESC_BTN_ABORT && !s_levelComplete)) && highlight >= 0)
 				{
 					// Draw the highlight button
 					const s32 highlightIndices[] = { 1, 7, 9, 5 };
-					blitDeltaFrame(&s_emState.escMenuFrames[highlightIndices[s_emState.buttonPressed]], 0, 0, s_emState.framebuffer);
+					blitDeltaFrame(&s_emState.escMenuFrames[highlightIndices[highlight]], 0, 0, s_emState.framebuffer);
 				}
 			}
 			// Confirmation.
 			else if (s_emState.confirmState == CONFIRM_STATE_ABORT)
 			{
+				const s32 highlight = escMenu_getHighlightButton();
 				blitDeltaFrame(&s_emState.confirmMenuFrames[CONFIRM_ABORT_BG], 0, 0, s_emState.framebuffer);
-				blitDeltaFrame(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP], 0, 0, s_emState.framebuffer);
-				blitDeltaFrame(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP], 0, 0, s_emState.framebuffer);
+				blitDeltaFrame(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP], 0, 0, s_emState.framebuffer);
+				blitDeltaFrame(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP], 0, 0, s_emState.framebuffer);
 			}
 			else if (s_emState.confirmState == CONFIRM_STATE_NEXT)
 			{
+				const s32 highlight = escMenu_getHighlightButton();
 				blitDeltaFrame(&s_emState.confirmMenuFrames[CONFIRM_NEXT_BG], 0, 0, s_emState.framebuffer);
-				blitDeltaFrame(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP], 0, 0, s_emState.framebuffer);
-				blitDeltaFrame(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP], 0, 0, s_emState.framebuffer);
+				blitDeltaFrame(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP], 0, 0, s_emState.framebuffer);
+				blitDeltaFrame(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP], 0, 0, s_emState.framebuffer);
 			}
 			else if (s_emState.confirmState == CONFIRM_STATE_QUIT)
 			{
+				const s32 highlight = escMenu_getHighlightButton();
 				blitDeltaFrame(&s_emState.confirmMenuFrames[CONFIRM_QUIT_BG], 0, 0, s_emState.framebuffer);
-				blitDeltaFrame(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_YES ? CONFIRM_QUIT_YESBTN_DOWN : CONFIRM_QUIT_YESBTN_UP], 0, 0, s_emState.framebuffer);
-				blitDeltaFrame(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_NO ? CONFIRM_QUIT_NOBTN_DOWN : CONFIRM_QUIT_NOBTN_UP], 0, 0, s_emState.framebuffer);
+				blitDeltaFrame(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_QUIT_YESBTN_DOWN : CONFIRM_QUIT_YESBTN_UP], 0, 0, s_emState.framebuffer);
+				blitDeltaFrame(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_QUIT_NOBTN_DOWN : CONFIRM_QUIT_NOBTN_UP], 0, 0, s_emState.framebuffer);
 			}
 
 			// Draw the mouse.
-			blitDeltaFrame(&s_cursor, s_emState.cursorPos.x, s_emState.cursorPos.z, s_emState.framebuffer);
+			if (drawMouse && menu_shouldDrawCursor())
+			{
+				blitDeltaFrame(&s_cursor, s_emState.cursorPos.x, s_emState.cursorPos.z, s_emState.framebuffer);
+			}
 		}
 		else
 		{
@@ -471,12 +487,13 @@ namespace TFE_DarkForces
 				// Draw the menu background.
 				blitDeltaFrameScaled(&s_emState.escMenuFrames[0], xOffset, 0, xScale, yScale, s_emState.framebuffer);
 
+				const s32 highlight = escMenu_getHighlightButton();
 				if (s_levelComplete)
 				{
 					// Attempt to clean up the button positions, note this is only a problem at non-vanilla resolutions.
 					fixed16_16 yOffset = (dispHeight == 200 || dispHeight == 400) ? 0 : round16(yScale / 2);
 
-					if (s_emState.buttonPressed == ESC_BTN_ABORT && s_emState.buttonHover)
+					if (highlight == ESC_BTN_ABORT)
 					{
 						blitDeltaFrameScaled(&s_emState.escMenuFrames[3], xOffset, yOffset, xScale, yScale, s_emState.framebuffer);
 					}
@@ -485,39 +502,42 @@ namespace TFE_DarkForces
 						blitDeltaFrameScaled(&s_emState.escMenuFrames[4], xOffset, yOffset, xScale, yScale, s_emState.framebuffer);
 					}
 				}
-				if ((s_emState.buttonPressed > ESC_BTN_ABORT || (s_emState.buttonPressed == ESC_BTN_ABORT && !s_levelComplete)) && s_emState.buttonHover)
+				if ((highlight > ESC_BTN_ABORT || (highlight == ESC_BTN_ABORT && !s_levelComplete)) && highlight >= 0)
 				{
 					// Attempt to clean up the button positions, note this is only a problem at non-vanilla resolutions.
 					fixed16_16 yOffset = (dispHeight == 200 || dispHeight == 400) ? 0 : round16(yScale / 2);
-					yOffset = min(yOffset, 3 - s_emState.buttonPressed);
+					yOffset = min(yOffset, 3 - highlight);
 
 					// Draw the highlight button
 					const s32 highlightIndices[] = { 1, 7, 9, 5 };
-					blitDeltaFrameScaled(&s_emState.escMenuFrames[highlightIndices[s_emState.buttonPressed]], xOffset, yOffset, xScale, yScale, s_emState.framebuffer);
+					blitDeltaFrameScaled(&s_emState.escMenuFrames[highlightIndices[highlight]], xOffset, yOffset, xScale, yScale, s_emState.framebuffer);
 				}
 			}
 			// Confirmation.
 			else if (s_emState.confirmState == CONFIRM_STATE_ABORT)
 			{
+				const s32 highlight = escMenu_getHighlightButton();
 				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[CONFIRM_ABORT_BG], xOffset, 0, xScale, yScale, s_emState.framebuffer);
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
 			}
 			else if (s_emState.confirmState == CONFIRM_STATE_NEXT)
 			{
+				const s32 highlight = escMenu_getHighlightButton();
 				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[CONFIRM_NEXT_BG], xOffset, 0, xScale, yScale, s_emState.framebuffer);
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
 			}
 			else if (s_emState.confirmState == CONFIRM_STATE_QUIT)
 			{
+				const s32 highlight = escMenu_getHighlightButton();
 				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[CONFIRM_QUIT_BG], xOffset, 0, xScale, yScale, s_emState.framebuffer);
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_YES ? CONFIRM_QUIT_YESBTN_DOWN : CONFIRM_QUIT_YESBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[s_emState.buttonPressed == CONFIRM_NO ? CONFIRM_QUIT_NOBTN_DOWN : CONFIRM_QUIT_NOBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_QUIT_YESBTN_DOWN : CONFIRM_QUIT_YESBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_QUIT_NOBTN_DOWN : CONFIRM_QUIT_NOBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
 			}
 
 			// Draw the mouse.
-			if (drawMouse)
+			if (drawMouse && menu_shouldDrawCursor())
 			{
 				blitDeltaFrameScaled(&s_cursor, s_emState.cursorPos.x, s_emState.cursorPos.z, xScale, yScale, s_emState.framebuffer);
 			}
@@ -526,7 +546,11 @@ namespace TFE_DarkForces
 
 	EscapeMenuAction escapeMenu_update()
 	{
-		vfb_setPalette(s_escMenuPalette);
+		if (s_escLpalette)
+		{
+			lpalette_setScreenPal(s_escLpalette);
+		}
+		s_emState.framebuffer = vfb_getCpuBuffer();
 
 		EscapeMenuAction action = escapeMenu_updateUI();
 		if (action != ESC_CONTINUE)
@@ -541,7 +565,7 @@ namespace TFE_DarkForces
 
 			// TFE
 			reticle_enable(true);
-			TFE_RenderBackend::bloomPostEnable(true);
+			return action;
 		}
 
 		escapeMenu_draw(JTRUE, JTRUE);
@@ -580,12 +604,14 @@ namespace TFE_DarkForces
 			{
 			case ESC_BTN_ABORT:
 				s_emState.confirmState = s_levelComplete ? CONFIRM_STATE_NEXT : CONFIRM_STATE_ABORT;
+				s_escHandheldFocus = CONFIRM_NO;
 				break;
 			case ESC_BTN_CONFIG:
 				action = ESC_CONFIG;
 				break;
 			case ESC_BTN_QUIT:
 				s_emState.confirmState = CONFIRM_STATE_QUIT;
+				s_escHandheldFocus = CONFIRM_NO;
 				break;
 			case ESC_BTN_RETURN:
 				action = ESC_RETURN;
@@ -596,7 +622,18 @@ namespace TFE_DarkForces
 		{
 			if (actionPressed < 0)
 			{
-				if (TFE_Input::keyPressed(s_emState.langKeys->k_yes))
+				if (menu_isHandheld())
+				{
+					if (TFE_Input::buttonPressed(CONTROLLER_BUTTON_A))
+					{
+						actionPressed = CONFIRM_YES;
+					}
+					else if (TFE_Input::buttonPressed(CONTROLLER_BUTTON_B))
+					{
+						actionPressed = CONFIRM_NO;
+					}
+				}
+				if (actionPressed < 0 && TFE_Input::keyPressed(s_emState.langKeys->k_yes))
 				{
 					actionPressed = CONFIRM_YES;
 				}
@@ -639,10 +676,70 @@ namespace TFE_DarkForces
 	{
 		EscapeMenuAction action = ESC_CONTINUE;
 		escMenu_handleMousePosition();
+
 		if (inputMapping_getActionState(IADF_MENU_TOGGLE) == STATE_PRESSED || TFE_Input::keyPressed(KEY_ESCAPE))
 		{
 			action = ESC_RETURN;
 			s_emState.escMenuOpen = JFALSE;
+			return action;
+		}
+
+		if (menu_isHandheld())
+		{
+			if (s_emState.confirmState == CONFIRM_STATE_NONE)
+			{
+				if (menu_handheldNavPressed(MENU_NAV_UP))
+				{
+					s_escHandheldFocus = (s_escHandheldFocus + ESC_BTN_COUNT - 1) % ESC_BTN_COUNT;
+				}
+				else if (menu_handheldNavPressed(MENU_NAV_DOWN))
+				{
+					s_escHandheldFocus = (s_escHandheldFocus + 1) % ESC_BTN_COUNT;
+				}
+			}
+			else
+			{
+				if (menu_handheldNavPressed(MENU_NAV_LEFT) || menu_handheldNavPressed(MENU_NAV_UP))
+				{
+					s_escHandheldFocus = CONFIRM_NO;
+				}
+				else if (menu_handheldNavPressed(MENU_NAV_RIGHT) || menu_handheldNavPressed(MENU_NAV_DOWN))
+				{
+					s_escHandheldFocus = CONFIRM_YES;
+				}
+			}
+
+			s_emState.buttonPressed = s_escHandheldFocus;
+			s_emState.buttonHover = true;
+
+			if (menu_handheldActivatePressed())
+			{
+				action = escapeMenu_handleAction(action, s_escHandheldFocus);
+			}
+			else if (menu_handheldCancelPressed())
+			{
+				if (s_emState.confirmState != CONFIRM_STATE_NONE)
+				{
+					s_emState.confirmState = CONFIRM_STATE_NONE;
+				}
+				else
+				{
+					action = ESC_RETURN;
+					s_emState.escMenuOpen = JFALSE;
+				}
+			}
+			else
+			{
+				action = escapeMenu_handleAction(action, -1);
+			}
+
+			if (s_emState.confirmState == CONFIRM_STATE_NONE)
+			{
+				s_emState.buttonPressed = s_escHandheldFocus;
+				s_emState.buttonHover = true;
+			}
+
+			return action;
 		}
 
 		s32 x = s_emState.cursorPos.x;
@@ -654,7 +751,7 @@ namespace TFE_DarkForces
 		x = floor16(div16(intToFixed16(x - vfb_getWidescreenOffset()), xScale));
 		z = floor16(div16(intToFixed16(z), yScale));
 
-		if (TFE_Input::mousePressed(MBUTTON_LEFT))
+		if (menu_pointerPressed())
 		{
 			s_emState.buttonPressed = -1;
 			if (s_emState.confirmState == CONFIRM_STATE_NONE)
@@ -697,7 +794,7 @@ namespace TFE_DarkForces
 				}
 			}
 		}
-		else if (TFE_Input::mouseDown(MBUTTON_LEFT) && s_emState.confirmState == CONFIRM_STATE_NONE && s_emState.buttonPressed >= 0)
+		else if (menu_pointerDown() && s_emState.confirmState == CONFIRM_STATE_NONE && s_emState.buttonPressed >= 0)
 		{
 			s_emState.buttonHover = false;
 			// Verify that the mouse is still over the button.
@@ -707,7 +804,7 @@ namespace TFE_DarkForces
 				s_emState.buttonHover = true;
 			}
 		}
-		else if (TFE_Input::mouseDown(MBUTTON_LEFT) && (s_emState.confirmState == CONFIRM_STATE_ABORT || s_emState.confirmState == CONFIRM_STATE_NEXT) && s_emState.buttonPressed >= 0)
+		else if (menu_pointerDown() && (s_emState.confirmState == CONFIRM_STATE_ABORT || s_emState.confirmState == CONFIRM_STATE_NEXT) && s_emState.buttonPressed >= 0)
 		{
 			s_emState.buttonHover = false;
 			if (x >= s_confirmButtonRange[s_emState.buttonPressed].x && x < s_confirmButtonRange[s_emState.buttonPressed].z &&
@@ -716,7 +813,7 @@ namespace TFE_DarkForces
 				s_emState.buttonHover = true;
 			}
 		}
-		else if (TFE_Input::mouseDown(MBUTTON_LEFT) && s_emState.confirmState == CONFIRM_STATE_QUIT && s_emState.buttonPressed >= 0)
+		else if (menu_pointerDown() && s_emState.confirmState == CONFIRM_STATE_QUIT && s_emState.buttonPressed >= 0)
 		{
 			s_emState.buttonHover = false;
 			if (x >= s_confirmButtonRange[s_emState.buttonPressed+2].x && x < s_confirmButtonRange[s_emState.buttonPressed+2].z &&
@@ -728,7 +825,6 @@ namespace TFE_DarkForces
 		else
 		{
 			action = escapeMenu_handleAction(action, (s_emState.buttonPressed >= 0 && s_emState.buttonHover) ? s_emState.buttonPressed : -1);
-			// Reset.
 			s_emState.buttonPressed = -1;
 			s_emState.buttonHover = false;
 		}
@@ -759,6 +855,14 @@ namespace TFE_DarkForces
 
 		u32 width, height;
 		vfb_getResolution(&width, &height);
+
+		menu_updateGamepadPointerState();
+
+		if (menu_isHandheld())
+		{
+			menu_handheldNavNewFrame();
+			return;
+		}
 
 		s32 dx, dy;
 		TFE_Input::getAccumulatedMouseMove(&dx, &dy);

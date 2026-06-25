@@ -81,11 +81,10 @@ bool ImageAnimButton(ImTextureID texture_id, ImTextureID texture_id2, const ImVe
 
     bool hovered, held;
     bool pressed = ButtonBehavior(bb, id, &hovered, &held, 0);
+    if (!hovered && g.NavId == id)
+        hovered = true;
 
-    // Render
-    const ImU32 col = GetColorU32((held && hovered) ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
-//    RenderNavHighlight(bb, id);
-//    RenderFrame(bb.Min, bb.Max, col, true, ImClamp((float)ImMin(padding.x, padding.y), 0.0f, g.Style.FrameRounding));
+    RenderNavHighlight(bb, id);
     if (bg_col.w > 0.0f)
         window->DrawList->AddRectFilled(bb.Min + padding, bb.Max - padding, GetColorU32(bg_col));
 

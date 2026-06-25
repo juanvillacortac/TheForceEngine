@@ -1,7 +1,9 @@
 #include <TFE_RenderBackend/textureGpu.h>
 #include <TFE_System/system.h>
 #include <TFE_Settings/settings.h>
+#include <TFE_Settings/linux/tfe_gl_backend.h>
 #include "openGL_Caps.h"
+#include "tfe_gl_init.h"
 #include "gl.h"
 #include <algorithm>
 #include <vector>
@@ -42,6 +44,17 @@ TextureGpu::~TextureGpu()
 
 bool TextureGpu::create(u32 width, u32 height, TexFormat format, bool hasMipmaps, MagFilter magFilter)
 {
+#if defined(TFE_RUNTIME_GL)
+	if (tfe_UseGLES())
+	{
+		if (!tfe_EnsureGLContextCurrent() || !tfe_EnsureGLESProcs())
+		{
+			TFE_System::logWrite(LOG_ERROR, "TextureGPU - OpenGL", "GLES proc/context check failed in create().");
+			return false;
+		}
+	}
+#endif
+
 	m_width = width;
 	m_height = height;
 	m_channels = c_channelCount[format];
@@ -118,7 +131,16 @@ bool TextureGpu::createArray(u32 width, u32 height, u32 layers, u32 channels, u3
 		}
 		width  >>= 1;
 		height >>= 1;
-		assert(glGetError() == GL_NO_ERROR);
+		GLenum error = glGetError();
+		if (error != GL_NO_ERROR)
+		{
+			TFE_System::logWrite(LOG_ERROR, "TextureGPU - OpenGL", "Failed to create texture array - size: (%u, %u), layers: %u. Error ID: 0x%x",
+				m_width, m_height, m_layers, error);
+			glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+			glDeleteTextures(1, &m_gpuHandle);
+			m_gpuHandle = 0;
+			return false;
+		}
 	}
 
 	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -128,7 +150,10 @@ bool TextureGpu::createArray(u32 width, u32 height, u32 layers, u32 channels, u3
 	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
 	glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
-	assert(glGetError() == GL_NO_ERROR);
+	if (glGetError() != GL_NO_ERROR)
+	{
+		return false;
+	}
 	return true;
 }
 

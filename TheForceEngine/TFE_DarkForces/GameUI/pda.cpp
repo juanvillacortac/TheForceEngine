@@ -100,6 +100,7 @@ namespace TFE_DarkForces
 
 	static PdaMode s_pdaMode = PDA_MODE_MAP;
 	static s32 s_simulatePressed = -1;
+	static s32 s_pdaHandheldTabFocus = PDA_BTN_MAP;
 
 	static s32 s_briefingMaxY;
 	static s16 s_briefY;
@@ -185,6 +186,7 @@ namespace TFE_DarkForces
 		s_pdaOpen = JTRUE;
 		s_buttonPressed = -1;
 		s_simulatePressed = -1;
+		s_pdaHandheldTabFocus = (s32)s_pdaMode;
 		s_buttonHover = JFALSE;
 		automap_updateMapData(MAP_CENTER_PLAYER);
 		automap_updateMapData(MAP_ENABLE_AUTOCENTER);
@@ -364,8 +366,8 @@ namespace TFE_DarkForces
 		pda_handleMouseAccum(&wdx, &wdy);
 
 		// Ensure PDA key presses handle replay data
-		bool mouseDown = TFE_Input::isDemoPlayback() && inputMapping_getAction(IADF_PRIMARY_FIRE) == STATE_DOWN || TFE_Input::mouseDown(MBUTTON_LEFT);
-		bool mousePressed = TFE_Input::isDemoPlayback() && inputMapping_getAction(IADF_PRIMARY_FIRE) == STATE_PRESSED || TFE_Input::mousePressed(MBUTTON_LEFT);
+		bool mouseDown = TFE_Input::isDemoPlayback() && inputMapping_getAction(IADF_PRIMARY_FIRE) == STATE_DOWN || TFE_Input::mouseDown(MBUTTON_LEFT) || menu_pointerDown();
+		bool mousePressed = TFE_Input::isDemoPlayback() && inputMapping_getAction(IADF_PRIMARY_FIRE) == STATE_PRESSED || TFE_Input::mousePressed(MBUTTON_LEFT) || menu_pointerPressed();
 		
 		// Handle Mouse Panning
 		if (mouseDown)
@@ -403,7 +405,7 @@ namespace TFE_DarkForces
 				LRect buttonRect;
 				lactorAnim_getFrame(s_pdaArt, &buttonRect);
 				
-				if (!TFE_Input::mousePressed(MBUTTON_LEFT) && !mousePressed)
+				if (!TFE_Input::mousePressed(MBUTTON_LEFT) && !mousePressed && !menu_pointerPressed())
 				{
 					if (i == s_simulatePressed)
 					{
@@ -645,6 +647,61 @@ namespace TFE_DarkForces
 		menu_handleMousePosition();
 		automap_setPdaActive(JTRUE);
 
+		if (menu_isHandheld())
+		{
+			if (TFE_Input::buttonPressed(CONTROLLER_BUTTON_LEFTSHOULDER))
+			{
+				s_pdaHandheldTabFocus = (s_pdaHandheldTabFocus + (PDA_BTN_EXIT + 1) - 1) % (PDA_BTN_EXIT + 1);
+			}
+			else if (TFE_Input::buttonPressed(CONTROLLER_BUTTON_RIGHTSHOULDER))
+			{
+				s_pdaHandheldTabFocus = (s_pdaHandheldTabFocus + 1) % (PDA_BTN_EXIT + 1);
+			}
+
+			if (s_pdaHandheldTabFocus <= PDA_BTN_BRIEF)
+			{
+				s_pdaMode = (PdaMode)s_pdaHandheldTabFocus;
+			}
+
+			if (menu_handheldActivatePressed())
+			{
+				if (s_pdaHandheldTabFocus == PDA_BTN_EXIT)
+				{
+					pda_close();
+					return;
+				}
+				else if (s_pdaHandheldTabFocus <= PDA_BTN_BRIEF)
+				{
+					s_pdaMode = (PdaMode)s_pdaHandheldTabFocus;
+				}
+			}
+			else if (menu_handheldCancelPressed())
+			{
+				pda_close();
+				return;
+			}
+
+			if (s_pdaMode == PDA_MODE_MAP)
+			{
+				if (TFE_Input::buttonPressed(CONTROLLER_BUTTON_X))
+				{
+					s_simulatePressed = PDA_BTN_ZOOMIN;
+				}
+				else if (TFE_Input::buttonPressed(CONTROLLER_BUTTON_Y))
+				{
+					s_simulatePressed = PDA_BTN_ZOOMOUT;
+				}
+				else if (TFE_Input::buttonPressed(CONTROLLER_BUTTON_START))
+				{
+					s_simulatePressed = PDA_BTN_LAYERUP;
+				}
+				else if (TFE_Input::buttonPressed(CONTROLLER_BUTTON_BACK))
+				{
+					s_simulatePressed = PDA_BTN_LAYERDOWN;
+				}
+			}
+		}
+
 		if (TFE_Input::keyPressed(KEY_SPACE))
 		{
 			if (TFE_Input::keyDown(KEY_LSHIFT) || TFE_Input::keyDown(KEY_RSHIFT))
@@ -659,19 +716,19 @@ namespace TFE_DarkForces
 
 		if (s_pdaMode == PDA_MODE_MAP)
 		{
-			if (TFE_Input::keyDown(KEY_UP))
+			if (TFE_Input::keyDown(KEY_UP) || (!menu_isHandheld() && menu_handheldNavDown(MENU_NAV_UP)) || (menu_isHandheld() && menu_handheldNavDown(MENU_NAV_UP)))
 			{
 				s_simulatePressed = PDA_BTN_PANUP;
 			}
-			else if (TFE_Input::keyDown(KEY_DOWN))
+			else if (TFE_Input::keyDown(KEY_DOWN) || (!menu_isHandheld() && menu_handheldNavDown(MENU_NAV_DOWN)) || (menu_isHandheld() && menu_handheldNavDown(MENU_NAV_DOWN)))
 			{
 				s_simulatePressed = PDA_BTN_PANDOWN;
 			}
-			if (TFE_Input::keyDown(KEY_LEFT))
+			if (TFE_Input::keyDown(KEY_LEFT) || (!menu_isHandheld() && menu_handheldNavDown(MENU_NAV_LEFT)) || (menu_isHandheld() && menu_handheldNavDown(MENU_NAV_LEFT)))
 			{
 				s_simulatePressed = PDA_BTN_PANLEFT;
 			}
-			else if (TFE_Input::keyDown(KEY_RIGHT))
+			else if (TFE_Input::keyDown(KEY_RIGHT) || (!menu_isHandheld() && menu_handheldNavDown(MENU_NAV_RIGHT)) || (menu_isHandheld() && menu_handheldNavDown(MENU_NAV_RIGHT)))
 			{
 				s_simulatePressed = PDA_BTN_PANRIGHT;
 			}
@@ -696,14 +753,20 @@ namespace TFE_DarkForces
 		}
 		else if (s_pdaMode == PDA_MODE_BRIEF)
 		{
-			if (TFE_Input::keyDown(KEY_UP))
+			if (TFE_Input::keyDown(KEY_UP) || menu_handheldNavDown(MENU_NAV_UP))
 			{
 				s_simulatePressed = PDA_BTN_PANUP;
 			}
-			else if (TFE_Input::keyDown(KEY_DOWN))
+			else if (TFE_Input::keyDown(KEY_DOWN) || menu_handheldNavDown(MENU_NAV_DOWN))
 			{
 				s_simulatePressed = PDA_BTN_PANDOWN;
 			}
+		}
+
+		if (menu_isHandheld() && s_pdaHandheldTabFocus == PDA_BTN_EXIT)
+		{
+			s_buttonPressed = PDA_BTN_EXIT;
+			s_buttonHover = JTRUE;
 		}
 
 		pda_handleButtons();
@@ -712,7 +775,8 @@ namespace TFE_DarkForces
 	void pda_drawButton(PdaButton id)
 	{
 		s32 pressed = 0;
-		if ((s_buttonHover && id == s_buttonPressed) || (id == (PdaButton)s_pdaMode))
+		if ((s_buttonHover && id == s_buttonPressed) || (id == (PdaButton)s_pdaMode)
+			|| (menu_isHandheld() && id == s_pdaHandheldTabFocus))
 		{
 			pressed = 1;
 		}

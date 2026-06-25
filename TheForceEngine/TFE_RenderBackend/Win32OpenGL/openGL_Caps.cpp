@@ -1,8 +1,11 @@
 #include "openGL_Caps.h"
+#include "tfe_gles_ext.h"
 #include "gl.h"
 #include <assert.h>
 #include <algorithm>
-#include <SDL_video.h>
+#include <SDL.h>
+#include <TFE_System/system.h>
+#include <TFE_Settings/linux/tfe_gl_backend.h>
 
 enum CapabilityFlags
 {
@@ -40,6 +43,7 @@ namespace OpenGL_Caps
 		glGetIntegerv(GL_MINOR_VERSION, &gl_min);
 
 		bool isMacOS = (strcmp(SDL_GetPlatform(), "Mac OS X") == 0);
+		const bool isGLES = tfe_UseGLES();
 
 		if (isMacOS && gl_maj >= 4) {
 			m_supportFlags = CAP_PBO | CAP_VBO | CAP_FBO | CAP_UBO | CAP_NON_POW_2 | CAP_TEXTURE_ARRAY;
@@ -63,6 +67,54 @@ namespace OpenGL_Caps
 				m_deviceTier = DEV_TIER_2;
 			}
 			
+			return;
+		}
+
+		if (isGLES)
+		{
+			m_supportFlags = CAP_PBO | CAP_VBO | CAP_FBO | CAP_UBO | CAP_NON_POW_2 | CAP_TEXTURE_ARRAY;
+			if (SDL_GL_ExtensionSupported("GL_EXT_texture_filter_anisotropic"))
+				m_supportFlags |= CAP_ANISO;
+
+			m_textureBufferMaxSize = tfe_GLESQueryMaxTextureBufferSize();
+			if (!m_textureBufferMaxSize && tfe_GLESHasTextureBuffer())
+				glGetIntegerv(GL_MAX_TEXTURE_BUFFER_SIZE, &m_textureBufferMaxSize);
+
+			if (m_supportFlags & CAP_ANISO)
+				glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &m_maxAnisotropy);
+			else
+				m_maxAnisotropy = 0.0f;
+
+			(void)glGetError();
+
+			if (tfe_GLESHasTextureBuffer()
+				&& tfe_GLESFragmentSupportsTextureBuffer()
+				&& (m_supportFlags & CAP_3_3_FULL) == CAP_3_3_FULL
+				&& m_textureBufferMaxSize >= GLSPEC_MAX_TEXTURE_BUFFER_SIZE_MIN)
+			{
+				m_deviceTier = DEV_TIER_2;
+			}
+			else if (tfe_UseBufferTexture2D()
+				&& gl_maj >= 3
+				&& (m_supportFlags & (CAP_VBO | CAP_FBO | CAP_PBO)) == (CAP_VBO | CAP_FBO | CAP_PBO))
+			{
+				GLint maxTexSize = 0;
+				glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexSize);
+				m_textureBufferMaxSize = maxTexSize * 1024;
+				if (m_textureBufferMaxSize >= GLSPEC_MAX_TEXTURE_BUFFER_SIZE_MIN)
+				{
+					m_deviceTier = DEV_TIER_2;
+					TFE_System::logWrite(LOG_MSG, "GLES", "GPU renderer using 2D texture buffer emulation.");
+				}
+			}
+			else if (gl_maj >= 3 && (m_supportFlags & (CAP_VBO | CAP_FBO | CAP_PBO)) == (CAP_VBO | CAP_FBO | CAP_PBO))
+			{
+				m_deviceTier = DEV_TIER_1;
+				if (!tfe_GLESHasTextureBuffer())
+					TFE_System::logWrite(LOG_ERROR, "GLES", "Texture buffer support required for GPU renderer (GLES 3.2 or GL_OES_texture_buffer).");
+				else if (!tfe_GLESFragmentSupportsTextureBuffer())
+					TFE_System::logWrite(LOG_WARNING, "GLES", "GPU renderer unavailable: fragment shaders do not support GL_EXT_texture_buffer on this driver.");
+			}
 			return;
 		}
 		

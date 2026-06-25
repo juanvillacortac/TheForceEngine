@@ -534,6 +534,11 @@ namespace TFE_DarkForces
 	{
 		if (task_getCount() > 1 && s_missionMode == MISSION_MODE_MAIN)
 		{
+			if (forceTextureUpdate)
+			{
+				TFE_Jedi::render_clearCachedTextures();
+				texturepacker_setConversionPalette(1, 6, s_levelPalette);
+			}
 			TFE_Jedi::renderer_setType(rendererIndex == 0 ? RENDERER_SOFTWARE : RENDERER_HARDWARE);
 			TFE_Jedi::render_setResolution(forceTextureUpdate);
 			TFE_Jedi::renderer_setLimits();
@@ -589,49 +594,7 @@ namespace TFE_DarkForces
 			s_prevTickFract = s_curTickFract;
 			s_playerTick = s_curTick;
 						
-			if (!escapeMenu_isOpen() && !pda_isOpen())
-			{
-				player_setupCamera();
-
-				if (s_missionMode == MISSION_MODE_LOADING)
-				{
-					blitLoadingScreen();
-				}
-				else if (s_missionMode == MISSION_MODE_MAIN)
-				{
-					// TFE - Level Script Support.
-					updateLevelScript(fixed16ToFloat(s_deltaTime));
-					// Dark Forces Draw.
-					updateScreensize();
-					if (s_playerEye)
-					{
-						drawWorld(s_framebuffer, s_playerEye->sector, s_levelColorMap, s_lightSourceRamp);
-					}
-					weapon_draw(s_framebuffer, (DrawRect*)vfb_getScreenRect(VFB_RECT_UI));
-					handleVisionFx();
-				}
-			}
-						
-			if (!escapeMenu_isOpen() && !pda_isOpen())
-			{
-				handleGeneralInput();
-				if (s_drawAutomap)
-				{
-					automap_draw(s_framebuffer);
-				}
-				hud_drawAndUpdate(s_framebuffer);
-				hud_drawMessage(s_framebuffer);
-				handlePaletteFx();
-			}
-			else
-			{
-				// TFE: Gpu Renderer.
-				Vec3f lumMaskGpu = { 0 };
-				Vec3f palFxGpu = { 0 };
-				TFE_Jedi::renderer_setPalFx(&lumMaskGpu, &palFxGpu);
-			}
-			
-			// Move this out of handleGeneralInput so that the HUD is properly copied.
+			// Update menus first so closing pause redraws the world on the same frame.
 			if (escapeMenu_isOpen())
 			{
 				EscapeMenuAction action = escapeMenu_update();
@@ -646,7 +609,9 @@ namespace TFE_DarkForces
 					{
 						TFE_System::postSystemUiRequest();
 					}
-					blankScreen();
+					setPalette(s_basePalette);
+					setPalette(s_basePalette);
+					TFE_RenderBackend::bloomPostEnable(true);
 				}
 				else if (action == ESC_ABORT_OR_NEXT)
 				{
@@ -672,7 +637,6 @@ namespace TFE_DarkForces
 			{
 				pda_update();
 
-				// If the PDA was closed, then unpause the game.
 				if (!pda_isOpen())
 				{
 					mission_pause(JFALSE);
@@ -685,6 +649,42 @@ namespace TFE_DarkForces
 				s_gamePaused = JTRUE;
 				task_pause(s_gamePaused, s_mainTask);
 				time_pause(s_gamePaused);
+			}
+
+			if (!escapeMenu_isOpen() && !pda_isOpen())
+			{
+				player_setupCamera();
+
+				if (s_missionMode == MISSION_MODE_LOADING)
+				{
+					blitLoadingScreen();
+				}
+				else if (s_missionMode == MISSION_MODE_MAIN)
+				{
+					updateLevelScript(fixed16ToFloat(s_deltaTime));
+					updateScreensize();
+					if (s_playerEye)
+					{
+						drawWorld(s_framebuffer, s_playerEye->sector, s_levelColorMap, s_lightSourceRamp);
+					}
+					weapon_draw(s_framebuffer, (DrawRect*)vfb_getScreenRect(VFB_RECT_UI));
+					handleVisionFx();
+				}
+
+				handleGeneralInput();
+				if (s_drawAutomap)
+				{
+					automap_draw(s_framebuffer);
+				}
+				hud_drawAndUpdate(s_framebuffer);
+				hud_drawMessage(s_framebuffer);
+				handlePaletteFx();
+			}
+			else
+			{
+				Vec3f lumMaskGpu = { 0 };
+				Vec3f palFxGpu = { 0 };
+				TFE_Jedi::renderer_setPalFx(&lumMaskGpu, &palFxGpu);
 			}
 
 			// vgaSwapBuffers() in the DOS code.
@@ -734,6 +734,7 @@ namespace TFE_DarkForces
 			*outColor = CONV_6bitTo8bit(srcColor[0]) | (CONV_6bitTo8bit(srcColor[1]) << 8u) | (CONV_6bitTo8bit(srcColor[2]) << 16u) | (0xffu << 24u);
 		}
 		vfb_setPalette(palette);
+		TFE_Jedi::renderer_setSourcePalette(palette);
 	}
 				
 	void blitLoadingScreen()

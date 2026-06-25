@@ -1,5 +1,6 @@
 // main.cpp : Defines the entry point for the application.
 #include "version.h"
+#include <TFE_Settings/linux/linux_display.h>
 #include <SDL.h>
 #include <TFE_System/types.h>
 #include <TFE_System/profiler.h>
@@ -14,8 +15,11 @@
 #include <TFE_FileSystem/paths.h>
 #include <TFE_Polygon/polygon.h>
 #include <TFE_RenderBackend/renderBackend.h>
+#include <TFE_RenderBackend/Win32OpenGL/openGL_Caps.h>
+#include <TFE_Jedi/Renderer/jediRenderer.h>
 #include <TFE_Input/inputMapping.h>
 #include <TFE_Settings/settings.h>
+#include <TFE_Settings/linux/tfe_gl_backend.h>
 #include <TFE_System/system.h>
 #include <TFE_System/CrashHandler/crashHandler.h>
 #include <TFE_System/frameLimiter.h>
@@ -108,12 +112,7 @@ void handleEvent(SDL_Event& Event)
 			const s32 cIdx = Event.cdevice.which;
 			if (SDL_IsGameController(cIdx))
 			{
-				SDL_GameController* controller = SDL_GameControllerOpen(cIdx);
-				SDL_Joystick* j = SDL_GameControllerGetJoystick(controller);
-				SDL_JoystickID joyId = SDL_JoystickInstanceID(j);
-
-				//Save the joystick id to used in the future events
-				SDL_GameControllerOpen(0);
+				SDL_GameControllerOpen(cIdx);
 			}
 		} break;
 		case SDL_MOUSEBUTTONDOWN:
@@ -211,8 +210,23 @@ void handleEvent(SDL_Event& Event)
 
 bool sdlInit()
 {
+#if defined(TFE_RUNTIME_GL) && defined(__linux__)
+	tfe_InitLinuxDisplayEnv();
+#endif
 	const int code = SDL_Init(SDL_INIT_TIMER | SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER | SDL_INIT_AUDIO);
 	if (code != 0) { return false; }
+
+	if (TFE_Ui::isHandheld())
+	{
+		const int joyCount = SDL_NumJoysticks();
+		for (int i = 0; i < joyCount; i++)
+		{
+			if (SDL_IsGameController(i))
+			{
+				SDL_GameControllerOpen(i);
+			}
+		}
+	}
 
 	TFE_Settings_Window* windowSettings = TFE_Settings::getWindowSettings();
 	bool fullscreen    = windowSettings->fullscreen || TFE_Settings::getTempSettings()->forceFullscreen;
@@ -616,7 +630,21 @@ int main(int argc, char* argv[])
 		TFE_System::logClose();
 		return PROGRAM_ERROR;
 	}
+
 	TFE_FrontEndUI::initConsole();
+
+	// Mali and similar GLES drivers may lack fragment texture-buffer support required by the GPU renderer.
+	if (tfe_UseHandheld() && !OpenGL_Caps::deviceSupportsGpuRenderer())
+	{
+		TFE_Settings_Graphics* handheldGraphics = TFE_Settings::getGraphicsSettings();
+		if (handheldGraphics->rendererIndex == RENDERER_HARDWARE)
+		{
+			TFE_System::logWrite(LOG_WARNING, "Handheld",
+				"GPU renderer not supported on this device (fragment texture buffers). Using software renderer.");
+			handheldGraphics->rendererIndex = RENDERER_SOFTWARE;
+		}
+	}
+
 	TFE_Audio::init(s_nullAudioDevice, TFE_Settings::getSoundSettings()->audioDevice);
 	TFE_MidiPlayer::init(TFE_Settings::getSoundSettings()->midiOutput, (MidiDeviceType)TFE_Settings::getSoundSettings()->midiType);
 	TFE_Image::init();
@@ -640,7 +668,18 @@ int main(int argc, char* argv[])
 	TFE_ForceScript::init();
 		
 	// Start up the game and skip the title screen.
-	if (firstRun)
+	if (tfe_UseHandheld())
+	{
+		if (firstRun)
+		{
+			TFE_FrontEndUI::applyHandheldPortDefaults();
+		}
+		if (validatePath())
+		{
+			TFE_FrontEndUI::skipLauncherOnHandheld();
+		}
+	}
+	else if (firstRun)
 	{
 		TFE_FrontEndUI::setAppState(APP_STATE_SET_DEFAULTS);
 	}

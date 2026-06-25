@@ -11,7 +11,7 @@
 
 namespace TFE_Jedi
 {
-	void screenGPU_init();
+	bool screenGPU_init();
 	void screenGPU_destroy();
 
 	void screenGPU_beginLines(u32 width, u32 height);
@@ -24,6 +24,7 @@ namespace TFE_Jedi
 
 	void screenGPU_beginQuads(u32 width, u32 height);
 	void screenGPU_endQuads();
+	void screenGPU_setForceIndexedPalette(bool force);
 
 	void screenGPU_setHudTextureCallbacks(s32 count, TextureListCallback* callbacks, bool forceAllocation = false);
 	void screenGPU_setIndexedColors(u32 count, const Vec4f* colors);

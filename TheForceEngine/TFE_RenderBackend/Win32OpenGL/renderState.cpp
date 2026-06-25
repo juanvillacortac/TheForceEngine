@@ -1,6 +1,8 @@
 #include <TFE_RenderBackend/renderState.h>
 #include <TFE_System/system.h>
 #include <TFE_RenderBackend/renderBackend.h>
+#include "tfe_gl_compat.h"
+#include "tfe_gles_ext.h"
 #include "gl.h"
 #include <vector>
 
@@ -114,7 +116,7 @@ namespace TFE_RenderState
 			}
 			if (stateToChange & STATE_WIREFRAME)
 			{
-				glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+				tfe_glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 			}
 			s_currentState |= stateFlags;
 		}
@@ -147,7 +149,7 @@ namespace TFE_RenderState
 			}
 			if (stateToChange & STATE_WIREFRAME)
 			{
-				glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+				tfe_glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 			}
 			s_currentState &= ~stateFlags;
 		}
@@ -216,17 +218,22 @@ namespace TFE_RenderState
 	
 	void enableClipPlanes(s32 count)
 	{
+		if (tfe_GLESUseClipDiscardFallback())
+		{
+			s_clipPlaneCount = count;
+			return;
+		}
 		if (s_clipPlaneCount != count)
 		{
 			// Disable unused planes.
 			for (s32 p = count; p < s_clipPlaneCount; p++)
 			{
-				glDisable(GL_CLIP_DISTANCE0 + p);
+				tfe_glClipDistance(GLenum(GL_CLIP_DISTANCE0 + p), false);
 			}
 			// Enable new planes.
 			for (s32 p = 0; p < count; p++)
 			{
-				glEnable(GL_CLIP_DISTANCE0 + p);
+				tfe_glClipDistance(GLenum(GL_CLIP_DISTANCE0 + p), true);
 			}
 
 			s_clipPlaneCount = count;

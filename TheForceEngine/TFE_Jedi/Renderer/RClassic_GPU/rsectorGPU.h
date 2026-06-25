@@ -34,6 +34,7 @@ namespace TFE_Jedi
 		static bool updateShaderSettings(bool initialize = false);
 		static bool updateShaders();
 		static void updateColorMap();
+		static void ensureColorMapUploaded();
 	private:
 		bool m_gpuInit;
 		bool m_levelInit;

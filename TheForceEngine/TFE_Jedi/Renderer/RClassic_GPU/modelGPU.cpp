@@ -271,8 +271,14 @@ namespace TFE_Jedi
 			defines[defineCount].name = "OPT_TRUE_COLOR";
 			defines[defineCount].value = "1";
 			defineCount++;
-		}
 
+			if (TFE_Settings::getGraphicsSettings()->useMipmapping)
+			{
+				defines[defineCount].name = "OPT_MIPMAPPING";
+				defines[defineCount].value = "1";
+				defineCount++;
+			}
+		}
 		bool result = true;
 		for (s32 i = 0; i < MGPU_SHADER_COUNT - 1; i++)
 		{
@@ -691,6 +697,7 @@ namespace TFE_Jedi
 						} break;
 						case PSHADE_TEXTURE:
 						{
+							if (!poly->texture) { break; }
 							// Flat shaded textured polygon
 							if (poly->vertexCount == 3)
 							{
@@ -703,6 +710,7 @@ namespace TFE_Jedi
 						} break;
 						case PSHADE_GOURAUD_TEXTURE:
 						{
+							if (!poly->texture) { break; }
 							// Smooth shaded textured polygon
 							if (poly->vertexCount == 3)
 							{
@@ -715,6 +723,7 @@ namespace TFE_Jedi
 						} break;
 						case PSHADE_PLANE:
 						{
+							if (!poly->texture) { break; }
 							// "Plane" shaded textured polygon
 							if (poly->vertexCount == 3)
 							{
@@ -781,7 +790,8 @@ namespace TFE_Jedi
 
 		drawItem->lightData =
 		{
-			f32(s_worldAmbient) + (s_showWireframe ? 128.0f : 0.0f), min(ambient, 31.0f) + (s_cameraLightSource ? 64.0f : 0.0f)
+			f32(s_worldAmbient) + (s_showWireframe ? 128.0f : 0.0f),
+			((((SecObject*)obj)->flags & OBJ_FLAG_FULLBRIGHT) ? 31.0f : min(ambient, 31.0f)) + (s_cameraLightSource ? 64.0f : 0.0f)
 		};
 		assert(drawItem->lightData.x < 64.0f || s_showWireframe);
 		drawItem->textureOffsets =
@@ -807,7 +817,7 @@ namespace TFE_Jedi
 		{
 			const size_t listCount = s_modelDrawList[s].size();
 			const ModelDraw* drawList = s_modelDrawList[s].data();
-			if (!listCount) { continue; }
+			if (!listCount || !shader->getHandle()) { continue; }
 			
 			// Bind the shader and set per-frame shader variables.
 			shader->bind();

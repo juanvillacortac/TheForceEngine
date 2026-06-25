@@ -3,6 +3,7 @@
 #include "../dynamicTexture.h"
 #include "openGL_Caps.h"
 #include <TFE_System/system.h>
+#include <TFE_Settings/linux/tfe_gl_backend.h>
 #include "gl.h"
 #include <assert.h>
 
@@ -91,43 +92,39 @@ bool DynamicTexture::changeBufferCount(u32 newBufferCount, bool forceRealloc/* =
 
 void DynamicTexture::update(const void* imageData, size_t size)
 {
-	// Update buffer indices.
+	// GLES/handheld: always upload synchronously to the displayed buffer.
+	// The old ping-pong path uploaded to writeBuffer but sampled readBuffer, so
+	// palette/framebuffer indices were one frame behind (white pixels, wrong colors).
+	const bool usePbo = m_bufferCount > 1 && OpenGL_Caps::supportsPbo() && !tfe_UseGLES();
+
+	if (!usePbo)
+	{
+		m_textures[m_readBuffer]->update(imageData, size);
+		return;
+	}
+
 	m_writeBuffer = (m_writeBuffer + 1) % m_bufferCount;
 	m_readBuffer = (m_readBuffer + 1) % m_bufferCount;
 
-	if (m_bufferCount == 1 || !OpenGL_Caps::supportsPbo())
+	// Stage the new CPU data, then upload that staging buffer to the display texture.
+	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, m_stagingBuffers[m_writeBuffer]);
+	glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0, size, imageData);
+
+	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, m_stagingBuffers[m_writeBuffer]);
+	glBindTexture(GL_TEXTURE_2D, m_textures[m_readBuffer]->getHandle());
+
+	u32 alignment = (m_width & 3) ? 1 : 4;
+	if (alignment != s_alignment)
 	{
-		// Copy imageData to [m_writeBuffer]
-		m_textures[m_writeBuffer]->update(imageData, size);
+		glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
+		s_alignment = alignment;
 	}
-	else
-	{
-		// Async copy from CPU data to staging buffer [writeBuffer].
-		glBindBuffer(GL_PIXEL_UNPACK_BUFFER, m_stagingBuffers[m_writeBuffer]);
-		glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0, size, imageData);
-		glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 
-		// Copy from staging data to read buffer [readBuffer].
-		glBindBuffer(GL_PIXEL_UNPACK_BUFFER, m_stagingBuffers[m_readBuffer]);
-		glBindTexture(GL_TEXTURE_2D, m_textures[m_readBuffer]->getHandle());
+	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_width, m_height, m_format == DTEX_RGBA8 ? GL_RGBA : GL_RED, GL_UNSIGNED_BYTE, 0);
 
-		// Switch to 1 byte alignment if necessary, but this may be slower than the default 4 byte alignment.
-		// Note: if the alignment is not correct, an error will be generated and the texture will not be updated.
-		u32 alignment = (m_width & 3) ? 1 : 4;
-		if (alignment != s_alignment)
-		{
-			glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
-			s_alignment = alignment;
-		}
-
-		// Update the GPU texture from the GPU staging buffer.
-		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_width, m_height, m_format == DTEX_RGBA8 ? GL_RGBA : GL_RED, GL_UNSIGNED_BYTE, 0);
-
-		// Cleanup.
-		glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-		glBindTexture(GL_TEXTURE_2D, 0);
-		CHECK_GL_ERROR
-	}
+	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+	glBindTexture(GL_TEXTURE_2D, 0);
+	CHECK_GL_ERROR
 }
 
 void DynamicTexture::bind(u32 slot) const

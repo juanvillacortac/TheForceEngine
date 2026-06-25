@@ -15,6 +15,9 @@
 #include "screenCapture.h"
 #include <SDL.h>
 #include "gl.h"
+#include "tfe_gl_init.h"
+#include "tfe_gl_compat.h"
+#include <TFE_Settings/linux/tfe_gl_backend.h>
 #include <stdio.h>
 #include <assert.h>
 #include <algorithm>
@@ -93,6 +96,62 @@ namespace TFE_RenderBackend
 		return (SDL_GetWindowFlags(s_window) & SDL_WINDOW_MINIMIZED) != 0;
 	}
 		
+#if defined(TFE_RUNTIME_GL)
+static bool tfe_TryCreateGLWindow(const WindowState& state, s32 x, s32 y, u32 windowFlags,
+	SDL_Window** outWindow, SDL_GLContext* outContext, TFE_GL_Backend backend)
+{
+	*outWindow = nullptr;
+	*outContext = nullptr;
+
+	tfe_SetGLBackend(backend);
+	TFE_System::logWrite(LOG_MSG, "RenderBackend", "Trying GL backend: %s",
+		backend == TFE_GL_BACKEND_GLES ? "GLES3" : "desktop OpenGL");
+
+	if (backend == TFE_GL_BACKEND_GLES)
+	{
+		for (int minor = 2; minor >= 0; minor--)
+		{
+			tfe_ApplyGLESAttributes(3, minor);
+			SDL_Window* window = SDL_CreateWindow(state.name, x, y, state.width, state.height, windowFlags);
+			if (!window)
+				continue;
+
+			SDL_GLContext context = SDL_GL_CreateContext(window);
+			if (!context)
+			{
+				SDL_DestroyWindow(window);
+				TFE_System::logWrite(LOG_WARNING, "RenderBackend", "GLES 3.%d context failed", minor);
+				continue;
+			}
+
+			*outWindow = window;
+			*outContext = context;
+			TFE_System::logWrite(LOG_MSG, "RenderBackend", "GLES 3.%d context OK", minor);
+			return true;
+		}
+		return false;
+	}
+
+	tfe_SetGLAttributesForBackend(TFE_GL_BACKEND_DESKTOP);
+	SDL_Window* window = SDL_CreateWindow(state.name, x, y, state.width, state.height, windowFlags);
+	if (!window)
+		return false;
+
+	SDL_GLContext context = SDL_GL_CreateContext(window);
+	if (!context)
+	{
+		SDL_DestroyWindow(window);
+		TFE_System::logWrite(LOG_WARNING, "RenderBackend", "Desktop OpenGL context failed");
+		return false;
+	}
+
+	*outWindow = window;
+	*outContext = context;
+	TFE_System::logWrite(LOG_MSG, "RenderBackend", "Desktop OpenGL context OK");
+	return true;
+}
+#endif
+
 	SDL_Window* createWindow(const WindowState& state)
 	{
 		u32 windowFlags = SDL_WINDOW_OPENGL;
@@ -121,10 +180,28 @@ namespace TFE_RenderBackend
 			windowFlags |= SDL_WINDOW_BORDERLESS;
 		}
 
-		SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, true);
+		TFE_System::logWrite(LOG_MSG, "RenderBackend", "SDL Videodriver: %s", SDL_GetCurrentVideoDriver());
 
+#if defined(TFE_RUNTIME_GL)
+		const TFE_GL_Backend preferred = tfe_PreferGLBackend();
+		const TFE_GL_Backend fallback = (preferred == TFE_GL_BACKEND_GLES)
+			? TFE_GL_BACKEND_DESKTOP : TFE_GL_BACKEND_GLES;
+
+		SDL_Window* window = nullptr;
+		SDL_GLContext context = nullptr;
+
+		if (!tfe_TryCreateGLWindow(state, x, y, windowFlags, &window, &context, preferred)
+			&& !tfe_TryCreateGLWindow(state, x, y, windowFlags, &window, &context, fallback))
+		{
+			TFE_System::logWrite(LOG_ERROR, "RenderBackend", "No usable OpenGL or GLES context (tried both).");
+			return nullptr;
+		}
+
+		TFE_System::logWrite(LOG_MSG, "RenderBackend", "Active GL backend: %s",
+			tfe_UseGLES() ? "GLES3" : "desktop OpenGL");
+#else
+		SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, true);
 		if (s_isMacOS) {
-			// macOS specific OpenGL context setup
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
@@ -132,26 +209,27 @@ namespace TFE_RenderBackend
 		}
 
 		TFE_System::logWrite(LOG_MSG, "RenderBackend", "SDL Videodriver: %s", SDL_GetCurrentVideoDriver());
+
 		SDL_Window* window = SDL_CreateWindow(state.name, x, y, state.width, state.height, windowFlags);
 		if (!window)
 		{
 			TFE_System::logWrite(LOG_ERROR, "RenderBackend", "SDL_CreateWindow() failed: %s", SDL_GetError());
 			return nullptr;
 		}
-		s_window = window;
 
-		SDL_GLContext context = SDL_GL_CreateContext(window);
+		SDL_GLContext context = tfe_CreateGLContext(window);
 		if (!context)
 		{
 			SDL_DestroyWindow(window);
 			TFE_System::logWrite(LOG_ERROR, "RenderBackend", "SDL_GL_CreateContext() failed: %s", SDL_GetError());
 			return nullptr;
 		}
+#endif
+		s_window = window;
+		tfe_SetActiveGLContext(window, context);
 
-		int glver = gladLoadGL((GLADloadfunc)SDL_GL_GetProcAddress);
-		if (glver == 0)
+		if (!tfe_LoadGraphicsAPI())
 		{
-			TFE_System::logWrite(LOG_ERROR, "RenderBackend", "cannot initialize GLAD");
 			SDL_GL_DeleteContext(context);
 			SDL_DestroyWindow(window);
 			return nullptr;
@@ -161,19 +239,27 @@ namespace TFE_RenderBackend
 		printGLInfo();
 		int tier = OpenGL_Caps::getDeviceTier();
 		TFE_System::logWrite(LOG_MSG, "RenderBackend", "OpenGL Device Tier: %d", tier);
-		if (tier < 2)
+		if (tier < 1)
 		{
 			TFE_System::logWrite(LOG_ERROR, "RenderBackend", "Insufficient GL capabilities!");
 			SDL_GL_DeleteContext(context);
 			SDL_DestroyWindow(window);
 			return nullptr;
 		}
+		if (tier < 2)
+		{
+			TFE_System::logWrite(LOG_WARNING, "RenderBackend", "GPU renderer unavailable (tier %d) — use renderer=0 or upgrade GLES driver.", tier);
+		}
 
 		//swap buffer at the monitors rate
 		SDL_GL_SetSwapInterval((state.flags & WINFLAG_VSYNC) ? 1 : 0);
 
-		MonitorInfo monitorInfo;
-		getDisplayMonitorInfo(displayIndex, &monitorInfo);
+		MonitorInfo monitorInfo = {};
+		if (!getDisplayMonitorInfo(displayIndex, &monitorInfo))
+		{
+			monitorInfo.w = state.width;
+			monitorInfo.h = state.height;
+		}
 		// High resolution displays (> 1080p) tend to be very high density, so increase the scale somewhat.
 		s32 uiScale = 100;
 		if (monitorInfo.h >= 2160) // 4k+
@@ -185,9 +271,8 @@ namespace TFE_RenderBackend
 			uiScale = 150;
 		}
 
-    if (s_isMacOS) {
-			// macOS specific setup:
-			// Create and bind a global VAO for macOS
+    if (s_isMacOS || tfe_UseGLES()) {
+			// GLES 3.x and macOS core profile require a bound VAO for draws.
 			glGenVertexArrays(1, &s_globalVAO);
 			if (!s_globalVAO)
 			{
@@ -196,21 +281,37 @@ namespace TFE_RenderBackend
 				return nullptr;
 			}
 			glBindVertexArray(s_globalVAO);
+			TFE_System::logWrite(LOG_MSG, "RenderBackend", "Global VAO created.");
 
-			// handle Retina displays
-			s32 drawableWidth, drawableHeight;
-			SDL_GL_GetDrawableSize(window, &drawableWidth, &drawableHeight);
-			if (drawableWidth > state.width)
-			{
-				uiScale = (uiScale * drawableWidth) / state.width;
+			if (s_isMacOS) {
+				// handle Retina displays
+				s32 drawableWidth, drawableHeight;
+				SDL_GL_GetDrawableSize(window, &drawableWidth, &drawableHeight);
+				if (drawableWidth > state.width)
+				{
+					uiScale = (uiScale * drawableWidth) / state.width;
+				}
 			}
 		}
 
 #ifndef _WIN32
-		SDL_SetWindowFullscreen(window, windowed ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+		if (!windowed)
+		{
+			const char* driver = SDL_GetCurrentVideoDriver();
+			if (!driver || strcmp(driver, "kmsdrm") != 0)
+				SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+		}
 #endif
 
-		TFE_Ui::init(window, context, uiScale);
+		TFE_System::logWrite(LOG_MSG, "RenderBackend", "UI init...");
+		if (!TFE_Ui::init(window, context, uiScale))
+		{
+			TFE_System::logWrite(LOG_ERROR, "RenderBackend", "UI init failed");
+			SDL_GL_DeleteContext(context);
+			SDL_DestroyWindow(window);
+			return nullptr;
+		}
+		TFE_System::logWrite(LOG_MSG, "RenderBackend", "UI init OK");
 		return window;
 	}
 		
@@ -221,16 +322,22 @@ namespace TFE_RenderBackend
 		if (!m_window)
 			return false;
 
+		TFE_System::logWrite(LOG_MSG, "RenderBackend", "PostProcess init...");
 		if (!TFE_PostProcess::init())
 		{
 			SDL_DestroyWindow((SDL_Window *)m_window);
 			return false;
 		}
+		TFE_System::logWrite(LOG_MSG, "RenderBackend", "Blit init...");
 		// TODO: Move effect creation into post effect system.
 		s_postEffectBlit = new Blit();
-		s_postEffectBlit->init();
+		if (!s_postEffectBlit->init())
+		{
+			TFE_System::logWrite(LOG_ERROR, "RenderBackend", "Blit shader init failed — screen compositing will be broken.");
+		}
 		s_postEffectBlit->enableFeatures(BLIT_GPU_COLOR_CONVERSION);
 
+		TFE_System::logWrite(LOG_MSG, "RenderBackend", "Bloom init...");
 		s_bloomTheshold = new BloomThreshold();
 		s_bloomTheshold->init();
 
@@ -241,23 +348,23 @@ namespace TFE_RenderBackend
 		s_bloomMerge->init();
 		
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-		glClearDepth(0.0f);
+		tfe_glClearDepth(0.0f);
 
 		s_palette = new DynamicTexture();
-		s_palette->create(256, 1, 2);
+		s_palette->create(256, 1, tfe_UseGLES() ? 1 : 2);
 
 		s_screenCapture = new ScreenCapture();
 		s_screenCapture->create(m_windowState.width, m_windowState.height, 4);
 
 		TFE_RenderState::clear();
 
+		TFE_System::logWrite(LOG_MSG, "RenderBackend", "GPU init complete");
 		return true;
 	}
 
 	void destroy()
 	{
-		if (s_isMacOS && s_globalVAO) {
-			// Unbind and delete the global VAO for macOS
+		if ((s_isMacOS || tfe_UseGLES()) && s_globalVAO) {
 			glDeleteVertexArrays(1, &s_globalVAO);
 			s_globalVAO = 0;
 		}
@@ -311,7 +418,7 @@ namespace TFE_RenderBackend
 	void setClearColor(const f32* color)
 	{
 		glClearColor(color[0], color[1], color[2], color[3]);
-		glClearDepth(0.0f);
+		tfe_glClearDepth(0.0f);
 
 		memcpy(s_clearColor, color, sizeof(f32) * 4);
 	}
@@ -429,12 +536,19 @@ namespace TFE_RenderBackend
 			}
 		}
 
+		if (displayIndex < 0 && !s_displayBounds.empty())
+			displayIndex = 0;
+
 		return displayIndex;
 	}
 		
 	bool getDisplayMonitorInfo(s32 displayIndex, MonitorInfo* monitorInfo)
 	{
 		enumerateDisplays();
+		if (s_displayBounds.empty())
+			return false;
+		if (displayIndex < 0)
+			displayIndex = 0;
 		if (displayIndex >= (s32)s_displayBounds.size())
 		{
 			return false;
@@ -629,6 +743,11 @@ namespace TFE_RenderBackend
 		s_displayMode = vdispInfo.mode;
 		s_widescreen = (vdispInfo.flags & VDISP_WIDESCREEN) != 0;
 		s_asyncFrameBuffer = (vdispInfo.flags & VDISP_ASYNC_FRAMEBUFFER) != 0;
+		if (tfe_UseGLES())
+		{
+			// Double-buffered async uploads desync palette indices from GPU palette on Mali.
+			s_asyncFrameBuffer = false;
+		}
 		s_gpuColorConvert = (vdispInfo.flags & VDISP_GPU_COLOR_CONVERT) != 0;
 		s_useRenderTarget = (vdispInfo.flags & VDISP_RENDER_TARGET) != 0;
 		s_bloomEnable = graphicsSettings->bloomEnabled && s_useRenderTarget;
@@ -724,12 +843,16 @@ namespace TFE_RenderBackend
 
 	void setPalette(const u32* palette)
 	{
-		if (palette && getGPUColorConvert())
+		if (palette)
 		{
-			TFE_ZONE("Update Palette");
-			s_palette->update(palette, 256 * sizeof(u32));
+			// GLES handheld blit/HUD paths always sample the GPU palette texture.
+			if (s_palette && (getGPUColorConvert() || tfe_UseGLES()))
+			{
+				TFE_ZONE("Update Palette");
+				s_palette->update(palette, 256 * sizeof(u32));
+			}
+			memcpy(s_paletteCpu, palette, 256 * sizeof(u32));
 		}
-		memcpy(s_paletteCpu, palette, 256 * sizeof(u32));
 	}
 
 	const u32* getPalette()
@@ -829,6 +952,11 @@ namespace TFE_RenderBackend
 		RenderTarget::copy((RenderTarget*)dst, (RenderTarget*)src);
 	}
 
+	RenderTargetHandle getVirtualRenderTarget()
+	{
+		return RenderTargetHandle(s_virtualRenderTarget);
+	}
+
 	void unbindRenderTarget()
 	{
 		RenderTarget::unbind();
@@ -914,17 +1042,54 @@ namespace TFE_RenderBackend
 
 	void drawIndexedTriangles(u32 triCount, u32 indexStride, u32 indexStart)
 	{
+#if defined(TFE_RUNTIME_GL)
+		if (tfe_UseGLES())
+		{
+			tfe_EnsureGLESProcs();
+			bindGlobalVAO();
+		}
+#endif
 		glDrawElements(GL_TRIANGLES, triCount * 3, indexStride == 4 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (void*)(iptr)(indexStart * indexStride));
 	}
 
 	void drawLines(u32 lineCount)
 	{
+#if defined(TFE_RUNTIME_GL)
+		if (tfe_UseGLES())
+		{
+			tfe_EnsureGLESProcs();
+			bindGlobalVAO();
+		}
+#endif
 		glDrawArrays(GL_LINES, 0, lineCount * 2);
 	}
 
 	static u32 s_bloomBufferCount = 0;
 	static RenderTarget* s_bloomTargets[16] = { 0 };
 	static TextureGpu* s_bloomTextures[16] = { 0 };
+
+	static TexFormat bloomTextureFormat()
+	{
+#if defined(TFE_RUNTIME_GL)
+		// RGBA8 bloom on Mali — RGBA16F is slow and often falls back to half-float paths.
+		if (tfe_UseGLES() || tfe_UseHandheld())
+		{
+			return TexFormat::TEX_RGBA8;
+		}
+#endif
+		return TexFormat::TEX_RGBAF16;
+	}
+
+	static u32 bloomMaxDownsamplePasses()
+	{
+#if defined(TFE_RUNTIME_GL)
+		if (tfe_UseGLES() || tfe_UseHandheld())
+		{
+			return 4;
+		}
+#endif
+		return 8;
+	}
 
 	void setupBloomStages()
 	{
@@ -948,7 +1113,7 @@ namespace TFE_RenderBackend
 		s_bloomBufferCount++;
 
 		s_bloomTextures[index] = new TextureGpu();
-		s_bloomTextures[index]->create(width, height, TexFormat::TEX_RGBAF16, false, MAG_FILTER_LINEAR);
+		s_bloomTextures[index]->create(width, height, bloomTextureFormat(), false, MAG_FILTER_LINEAR);
 		s_bloomTargets[index] = new RenderTarget();
 		s_bloomTargets[index]->create(1, &s_bloomTextures[index], false);
 
@@ -960,7 +1125,7 @@ namespace TFE_RenderBackend
 		TFE_PostProcess::appendEffect(s_bloomTheshold, TFE_ARRAYSIZE(bloomTresholdInputs), bloomTresholdInputs, s_bloomTargets[index], 0, 0, width, height, true);
 
 		// Downscale.
-		while (s_bloomBufferCount < 8 && width > 8 && height > 8)
+		while (s_bloomBufferCount < bloomMaxDownsamplePasses() && width > 8 && height > 8)
 		{
 			s32 index = s_bloomBufferCount;
 			s_bloomBufferCount++;
@@ -968,7 +1133,7 @@ namespace TFE_RenderBackend
 			width  >>= 1;
 			height >>= 1;
 			s_bloomTextures[index] = new TextureGpu();
-			s_bloomTextures[index]->create(width, height, TexFormat::TEX_RGBAF16, false, MAG_FILTER_LINEAR);
+			s_bloomTextures[index]->create(width, height, bloomTextureFormat(), false, MAG_FILTER_LINEAR);
 			s_bloomTargets[index] = new RenderTarget();
 			s_bloomTargets[index]->create(1, &s_bloomTextures[index], false);
 
@@ -990,7 +1155,7 @@ namespace TFE_RenderBackend
 			s_bloomBufferCount++;
 
 			s_bloomTextures[index] = new TextureGpu();
-			s_bloomTextures[index]->create(width, height, TexFormat::TEX_RGBAF16, false, MAG_FILTER_LINEAR);
+			s_bloomTextures[index]->create(width, height, bloomTextureFormat(), false, MAG_FILTER_LINEAR);
 			s_bloomTargets[index] = new RenderTarget();
 			s_bloomTargets[index]->create(1, &s_bloomTextures[index], false);
 
@@ -1080,7 +1245,7 @@ namespace TFE_RenderBackend
 
 	void bindGlobalVAO(void)
 	{
-		if (s_isMacOS) {
+		if ((s_isMacOS || tfe_UseGLES()) && s_globalVAO) {
 			glBindVertexArray(s_globalVAO);
 		}
 	}

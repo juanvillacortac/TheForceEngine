@@ -145,6 +145,7 @@ namespace TFE_RenderBackend
 	void clearRenderTarget(RenderTargetHandle handle, const f32* clearColor, f32 clearDepth = 1.0f);
 	void clearRenderTargetDepth(RenderTargetHandle handle, f32 clearDepth = 1.0f);
 	void copyRenderTarget(RenderTargetHandle dst, RenderTargetHandle src);
+	RenderTargetHandle getVirtualRenderTarget();
 	void unbindRenderTarget();
 	const TextureGpu* getRenderTargetTexture(RenderTargetHandle rtHandle);
 	void getRenderTargetDim(RenderTargetHandle rtHandle, u32* width, u32* height);

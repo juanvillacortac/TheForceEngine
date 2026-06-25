@@ -93,7 +93,10 @@ namespace TFE_Memory
 
 	ChunkedArray* createChunkedArray(u32 elemSize, u32 elemPerChunk, u32 initChunkCount, MemoryRegion* region)
 	{
+		if (!region || !initChunkCount) { return nullptr; }
+
 		ChunkedArray* arr = (ChunkedArray*)region_alloc(region, sizeof(ChunkedArray));
+		if (!arr) { return nullptr; }
 		memset(arr, 0, sizeof(ChunkedArray));
 		
 		arr->region = region;
@@ -103,6 +106,11 @@ namespace TFE_Memory
 		arr->elemPerChunk = elemPerChunk;
 		arr->chunkCount = initChunkCount;
 		arr->chunks = (u8**)region_realloc(region, arr->chunks, sizeof(u8*) * initChunkCount);
+		if (!arr->chunks)
+		{
+			region_free(region, arr);
+			return nullptr;
+		}
 		
 		arr->freeSlotCount = 0;
 		arr->freeSlotCapacity = 0;
@@ -112,6 +120,16 @@ namespace TFE_Memory
 		for (u32 i = 0; i < initChunkCount; i++)
 		{
 			arr->chunks[i] = (u8*)region_alloc(region, chunkAllocSize);
+			if (!arr->chunks[i])
+			{
+				for (u32 j = 0; j < i; j++)
+				{
+					region_free(region, arr->chunks[j]);
+				}
+				region_free(region, arr->chunks);
+				region_free(region, arr);
+				return nullptr;
+			}
 		}
 
 		return arr;
@@ -145,14 +163,22 @@ namespace TFE_Memory
 		if (newChunkCount > arr->chunkCount)
 		{
 			arr->chunks = (u8**)region_realloc(arr->region, arr->chunks, sizeof(u8*) * newChunkCount);
+			if (!arr->chunks) { arr->elemCount--; return nullptr; }
 
 			const u32 chunkAllocSize = arr->elemPerChunk * arr->elemSize;
 			for (u32 i = arr->chunkCount; i < newChunkCount; i++)
 			{
 				arr->chunks[i] = (u8*)region_alloc(arr->region, chunkAllocSize);
+				if (!arr->chunks[i])
+				{
+					arr->elemCount--;
+					return nullptr;
+				}
 			}
 			arr->chunkCount = newChunkCount;
 		}
+
+		if (!arr->chunks[newChunkIndex]) { arr->elemCount--; return nullptr; }
 
 		const u32 index = elementIndex - newChunkIndex*arr->elemPerChunk;
 		assert(index < arr->elemPerChunk);
@@ -194,6 +220,7 @@ namespace TFE_Memory
 		arr->freeSlotCount = 0;
 		for (u32 i = 0; i < arr->chunkCount; i++)
 		{
+			if (!arr->chunks[i]) { continue; }
 			memset(arr->chunks[i], 0, arr->elemPerChunk * arr->elemSize);
 		}
 	}

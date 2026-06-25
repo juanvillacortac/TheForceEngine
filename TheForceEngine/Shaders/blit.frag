@@ -56,9 +56,11 @@ vec3 applyGamma(vec3 color, float gamma)
 void main()
 {
 #ifdef ENABLE_GPU_COLOR_CONVERSION
-	// read the color index, it will be 0.0 - 255.0/256.0 range which maps to 0 - 255
-	float index = texture(VirtualDisplay, Frag_UV).r;
-	Out_Color.rgb = texture(Palette, vec2(index, 0.5)).rgb;
+	// R8 indices are normalized to [0,1] as c/255. Use texelFetch for exact palette
+	// lookups — texture(Palette, vec2(index, 0.5)) bleeds at high indices on GLES.
+	int palIndex = int(texture(VirtualDisplay, Frag_UV).r * 255.0 + 0.5);
+	palIndex = clamp(palIndex, 0, 255);
+	Out_Color.rgb = texelFetch(Palette, ivec2(palIndex, 0), 0).rgb;
 #else
 	Out_Color.rgb = texture(VirtualDisplay, Frag_UV).rgb;
 #endif

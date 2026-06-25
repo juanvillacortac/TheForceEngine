@@ -3,17 +3,19 @@ uniform vec3 CameraRight;
 uniform mat3 CameraView;
 uniform mat4 CameraProj;
 
-uniform isamplerBuffer TextureTable;
-uniform samplerBuffer DrawListPosXZ_Texture;
-uniform samplerBuffer DrawListPosYU_Texture;
-uniform isamplerBuffer DrawListTexId_Texture;
+#include "Shaders/bufferAccess.h"
 
-uniform samplerBuffer DrawListPlanes;
+TFE_DECLARE_IBUFFER(TextureTable);
+TFE_DECLARE_FBUFFER(DrawListPosXZ_Texture);
+TFE_DECLARE_FBUFFER(DrawListPosYU_Texture);
+TFE_DECLARE_IBUFFER(DrawListTexId_Texture);
+
+TFE_DECLARE_FBUFFER(DrawListPlanes);
 
 // in int gl_VertexID;
 out vec2 Frag_Uv; // base uv coordinates (0 - 1)
 out vec3 Frag_Pos;     // camera relative position for lighting.
-out float gl_ClipDistance[8];
+#include "Shaders/clipDistance.h"
 flat out vec4 Texture_Data; // not much here yet.
 flat out int Frag_TextureId;
 
@@ -29,9 +31,9 @@ void main()
 	int spriteIndex = gl_VertexID / 4;
 	int vertexId  = gl_VertexID & 3;
 	
-	vec4 posTextureXZ = texelFetch(DrawListPosXZ_Texture, spriteIndex);
-	vec4 posTextureYU = texelFetch(DrawListPosYU_Texture, spriteIndex);
-	uvec2 texPortalData = uvec2(texelFetch(DrawListTexId_Texture, spriteIndex).rg);
+	vec4 posTextureXZ = tfe_fetchFBuffer(DrawListPosXZ_Texture, spriteIndex);
+	vec4 posTextureYU = tfe_fetchFBuffer(DrawListPosYU_Texture, spriteIndex);
+	uvec2 texPortalData = uvec2(tfe_fetchIBuffer8(DrawListTexId_Texture, spriteIndex).rg);
 	uint tex_flags = texPortalData.x;
 	Frag_TextureId = int(tex_flags & 32767u);
 
@@ -42,7 +44,7 @@ void main()
 	vtx_pos.xz = mix(posTextureXZ.xy, posTextureXZ.zw, u);
 	vtx_pos.y  = mix(posTextureYU.x, posTextureYU.y, v);
 
-	ivec2 sh = texelFetch(TextureTable, Frag_TextureId).yw;
+	ivec2 sh = tfe_fetchIBuffer(TextureTable, Frag_TextureId).yw;
 	float scaleFactor = 1.0 / float(sh.x >> 12);
 
 	vec2 vtx_uv;
@@ -60,12 +62,12 @@ void main()
 	// Clipping.
 	for (int i = 0; i < int(portalCount) && i < 8; i++)
 	{
-		vec4 plane = texelFetch(DrawListPlanes, int(portalOffset) + i);
-		gl_ClipDistance[i] = dot(vec4(vtx_pos.xyz, 1.0), plane);
+		vec4 plane = tfe_fetchFBuffer(DrawListPlanes, int(portalOffset) + i);
+		TFE_CLIP_SET(i, dot(vec4(vtx_pos.xyz, 1.0), plane));
 	}
 	for (int i = int(portalCount); i < 8; i++)
 	{
-		gl_ClipDistance[i] = 1.0;
+		TFE_CLIP_SET(i, 1.0);
 	}
 
 	// Relative position

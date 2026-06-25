@@ -1,4 +1,5 @@
 uniform sampler2D Palette;
+#include "Shaders/clipDistanceFrag.h"
 #ifdef OPT_TRUE_COLOR
 flat in vec3 Frag_Color;
 #else
@@ -14,6 +15,7 @@ out vec4 Out_Color;
 
 void main()
 {
+	TFE_APPLY_CLIP_DISCARD();
 	#ifdef OPT_TRUE_COLOR
 		Out_Color.rgb = Frag_Color;
 	#else

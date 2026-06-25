@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <cstdlib>
 
 #ifdef _WIN32
 	// Following includes for Windows LinkCallback
@@ -33,9 +34,20 @@ namespace TFE_Markdown
 
 	bool init(f32 baseFontSize)
 	{
-		char fp[TFE_MAX_PATH];
-
 		ImGuiIO& io = ImGui::GetIO();
+		const bool handheld = (std::getenv("TFE_HANDHELD") && std::getenv("TFE_HANDHELD")[0] == '1');
+
+		if (handheld)
+		{
+			s_baseFont = io.Fonts->AddFontDefault();
+			s_mdConfig.boldFont = s_baseFont;
+			s_mdConfig.headingFormats[0].font = s_baseFont;
+			s_mdConfig.headingFormats[1].font = s_baseFont;
+			s_mdConfig.headingFormats[2].font = s_baseFont;
+			return true;
+		}
+
+		char fp[TFE_MAX_PATH];
 
 		sprintf(fp, "Fonts/DroidSans.ttf");
 		TFE_Paths::mapSystemPath(fp);

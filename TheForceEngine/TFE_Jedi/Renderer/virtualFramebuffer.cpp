@@ -3,6 +3,8 @@
 #include "virtualFramebuffer.h"
 #include <TFE_RenderBackend/renderBackend.h>
 #include <TFE_Settings/settings.h>
+#include <TFE_Settings/linux/tfe_gl_backend.h>
+#include <TFE_System/system.h>
 
 namespace TFE_Jedi
 {
@@ -243,7 +245,7 @@ namespace TFE_Jedi
 		// Setup or update the virtual display.
 		TFE_Settings_Graphics* graphics = TFE_Settings::getGraphicsSettings();
 		u32 vdispFlags = 0;
-		if (graphics->asyncFramebuffer)
+		if (graphics->asyncFramebuffer && !tfe_UseGLES())
 		{
 			vdispFlags |= VDISP_ASYNC_FRAMEBUFFER;
 		}

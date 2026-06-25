@@ -2230,6 +2230,8 @@ static int glad_gl_get_extensions( const char **out_exts, char ***out_exts_i) {
         }
         for(index = 0; index < num_exts_i; index++) {
             const char *gl_str_tmp = (const char*) glad_glGetStringi(GL_EXTENSIONS, index);
+            if (!gl_str_tmp)
+                continue;
             size_t len = strlen(gl_str_tmp) + 1;
 
             char *local_str = (char*) malloc(len * sizeof(char));

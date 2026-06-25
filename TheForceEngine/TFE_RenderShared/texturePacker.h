@@ -30,6 +30,7 @@ namespace TFE_Jedi
 	{
 		// GPU resources
 		ShaderBuffer textureTableGPU;	// full texture table, includes all pages.
+		TextureGpu textureTableTex;		// GLES Mali: integer table as RGBA8 2D texture (replaces ShaderBuffer).
 		TextureGpu* texture = nullptr;	// texture array, where each slice is a page.
 
 		// CPU memory, this is kept around so it can be used on multiple levels.
@@ -46,6 +47,7 @@ namespace TFE_Jedi
 		u32 bytesPerTexel = 1;
 		u32 pageSize;
 		bool trueColor = false;
+		bool gpuBuffersReady = false;
 
 		// Mip maps.
 		u32 mipCount = 1;
@@ -63,8 +65,11 @@ namespace TFE_Jedi
 
 	// Begin the packing process, this clears out the texture packer.
 	bool texturepacker_begin(TexturePacker* texturePacker);
-	// Commit the final packing to GPU memory.
+	// Commit CPU packing; GPU upload is deferred until texturepacker_flushGpu() (render frame).
 	void texturepacker_commit();
+	// Upload atlas + texture table on the GL context (call from beginRender, not level load).
+	bool texturepacker_flushGpu();
+	void texturepacker_bindTextureTable(s32 slot);
 
 	// Reset the texture packer for new games.
 	void texturepacker_reset();

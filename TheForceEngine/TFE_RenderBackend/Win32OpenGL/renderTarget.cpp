@@ -1,6 +1,8 @@
 #include "renderTarget.h"
 #include <TFE_RenderBackend/renderState.h>
 #include <TFE_RenderBackend/renderBackend.h>
+#include "tfe_gl_compat.h"
+#include "tfe_gl_init.h"
 #include "gl.h"
 #include <assert.h>
 
@@ -32,6 +34,12 @@ RenderTarget::~RenderTarget()
 
 bool RenderTarget::create(s32 textureCount, TextureGpu** textures, bool depthBuffer)
 {
+#if defined(TFE_RUNTIME_GL)
+	if (tfe_UseGLES() && !tfe_EnsureGLESProcs())
+	{
+		return false;
+	}
+#endif
 	if (textureCount < 1 || !textures || !textures[0]) { return false; }
 	m_textureCount = textureCount;
 	for (u32 i = 0; i < m_textureCount; i++)
@@ -43,7 +51,7 @@ bool RenderTarget::create(s32 textureCount, TextureGpu** textures, bool depthBuf
 	glBindFramebuffer(GL_FRAMEBUFFER, m_gpuHandle);
 	for (u32 i = 0; i < m_textureCount; i++)
 	{
-		glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, m_texture[i]->getHandle(), 0);
+		tfe_glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, m_texture[i]->getHandle(), 0);
 	}
 
 	m_depthBufferHandle = 0;
@@ -77,7 +85,7 @@ void RenderTarget::bind()
 {
 	glBindFramebuffer(GL_FRAMEBUFFER, m_gpuHandle);
 	glViewport(0, 0, m_texture[0]->getWidth(), m_texture[0]->getHeight());
-	glDepthRange(0.0f, 1.0f);
+	tfe_glDepthRange(0.0f, 1.0f);
 }
 
 void RenderTarget::clear(const f32* color, f32 depth, u8 stencil, bool clearColor)
@@ -92,7 +100,7 @@ void RenderTarget::clear(const f32* color, f32 depth, u8 stencil, bool clearColo
 	{
 		clearFlags |= GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT;
 		TFE_RenderState::setStateEnable(true, STATE_DEPTH_WRITE | STATE_STENCIL_WRITE);
-		glClearDepth(depth);
+		tfe_glClearDepth(depth);
 		glClearStencil(stencil);
 	}
 
@@ -104,7 +112,7 @@ void RenderTarget::clear(const f32* color, f32 depth, u8 stencil, bool clearColo
 	 if (m_depthBufferHandle)
 	 {
 		 TFE_RenderState::setStateEnable(true, STATE_DEPTH_WRITE);
-		 glClearDepth(depth);
+		 tfe_glClearDepth(depth);
 		 glClear(GL_DEPTH_BUFFER_BIT);
 	 }
  }

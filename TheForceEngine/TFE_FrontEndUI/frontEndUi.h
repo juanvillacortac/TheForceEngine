@@ -41,6 +41,8 @@ namespace TFE_FrontEndUI
 	IGame* getCurrentGame();
 
 	void setAppState(AppState state);
+	void applyHandheldPortDefaults();
+	void skipLauncherOnHandheld();
 	void enableConfigMenu();
 	AppState menuReturn();
 	void setMenuReturnState(AppState state);

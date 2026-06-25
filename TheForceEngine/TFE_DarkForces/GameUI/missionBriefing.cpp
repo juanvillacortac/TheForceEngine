@@ -38,6 +38,18 @@ namespace TFE_DarkForces
 		BRIEF_BTN_COUNT,
 	};
 	static s32 s_keyPressed = -1;
+	static s32 s_briefHandheldFocus = BRIEF_BTN_OK;
+	static const s32 c_briefFocusOrder[] =
+	{
+		BRIEF_BTN_OK,
+		BRIEF_BTN_UP,
+		BRIEF_BTN_DOWN,
+		BRIEF_BTN_CANCEL,
+		BRIEF_BTN_EASY,
+		BRIEF_BTN_MEDIUM,
+		BRIEF_BTN_HARD,
+	};
+	static const s32 c_briefFocusCount = 7;
 	static JBool s_briefingOpen = JFALSE;
 	static s32 s_skill = 0;
 	static LRect s_briefRect = { 25, 15, 155, 305 };
@@ -230,7 +242,79 @@ namespace TFE_DarkForces
 		
 		// Mouse interactions.
 		menu_handleMousePosition();
-		if (TFE_Input::mousePressed(MBUTTON_LEFT))
+
+		if (menu_isHandheld())
+		{
+			auto moveBriefFocus = [](s32 delta)
+			{
+				s32 index = 0;
+				for (s32 i = 0; i < c_briefFocusCount; i++)
+				{
+					if (c_briefFocusOrder[i] == s_briefHandheldFocus)
+					{
+						index = i;
+						break;
+					}
+				}
+				index = (index + delta + c_briefFocusCount) % c_briefFocusCount;
+				s_briefHandheldFocus = c_briefFocusOrder[index];
+			};
+
+			if (menu_handheldNavPressed(MENU_NAV_LEFT))
+			{
+				moveBriefFocus(-1);
+			}
+			else if (menu_handheldNavPressed(MENU_NAV_RIGHT))
+			{
+				moveBriefFocus(1);
+			}
+			else if (menu_handheldNavPressed(MENU_NAV_UP))
+			{
+				moveBriefFocus(-1);
+			}
+			else if (menu_handheldNavPressed(MENU_NAV_DOWN))
+			{
+				moveBriefFocus(1);
+			}
+
+			s_keyPressed = s_briefHandheldFocus;
+
+			if (menu_handheldActivatePressed())
+			{
+				switch (s_briefHandheldFocus)
+				{
+					case BRIEF_BTN_OK:
+						*abort = JFALSE;
+						exitBriefing = JTRUE;
+						break;
+					case BRIEF_BTN_UP:
+						missionBriefing_scroll(-BRIEF_LINE_SCROLL);
+						break;
+					case BRIEF_BTN_DOWN:
+						missionBriefing_scroll(BRIEF_LINE_SCROLL);
+						break;
+					case BRIEF_BTN_CANCEL:
+						*abort = JTRUE;
+						exitBriefing = JTRUE;
+						break;
+					case BRIEF_BTN_EASY:
+						s_skill = 0;
+						break;
+					case BRIEF_BTN_MEDIUM:
+						s_skill = 1;
+						break;
+					case BRIEF_BTN_HARD:
+						s_skill = 2;
+						break;
+				}
+			}
+			else if (menu_handheldCancelPressed())
+			{
+				*abort = JTRUE;
+				exitBriefing = JTRUE;
+			}
+		}
+		else if (menu_pointerPressed())
 		{
 			s_buttonPressed = -1;
 			for (s32 i = 0; i < BRIEF_BTN_COUNT; i++)
@@ -248,7 +332,7 @@ namespace TFE_DarkForces
 				}
 			}
 		}
-		else if (TFE_Input::mouseDown(MBUTTON_LEFT) && s_buttonPressed >= 0)
+		else if (menu_pointerDown() && s_buttonPressed >= 0)
 		{
 			lactor_setState(s_menuActor, 2 * (1 + s_buttonPressed), 0);
 			LRect buttonRect;
@@ -334,16 +418,23 @@ namespace TFE_DarkForces
 		// These need to be timer limited so that the scrolling works correctly.
 		if (ltime_isFrameReady())
 		{
-			s_keyPressed = -1;
-			if (TFE_Input::keyDown(KEY_UP))
+			if (!menu_isHandheld())
+			{
+				s_keyPressed = -1;
+			}
+			if (TFE_Input::keyDown(KEY_UP) || (menu_isHandheld() && menu_handheldNavDown(MENU_NAV_UP) && s_briefHandheldFocus == BRIEF_BTN_UP))
 			{
 				s_keyPressed = BRIEF_BTN_UP;
 				missionBriefing_scroll(-BRIEF_LINE_SCROLL);
 			}
-			else if (TFE_Input::keyDown(KEY_DOWN))
+			else if (TFE_Input::keyDown(KEY_DOWN) || (menu_isHandheld() && menu_handheldNavDown(MENU_NAV_DOWN) && s_briefHandheldFocus == BRIEF_BTN_DOWN))
 			{
 				s_keyPressed = BRIEF_BTN_DOWN;
 				missionBriefing_scroll(BRIEF_LINE_SCROLL);
+			}
+			else if (menu_isHandheld())
+			{
+				s_keyPressed = s_briefHandheldFocus;
 			}
 			
 			if (TFE_Input::keyDown(KEY_PAGEUP))

@@ -1,3 +1,5 @@
+#include "Shaders/bufferAccess.h"
+
 uniform vec3 CameraPos;
 uniform vec3 CameraRight;
 uniform mat3 CameraView;
@@ -7,13 +9,13 @@ uniform mat3 ModelMtx;
 uniform vec3 ModelPos;
 uniform uvec2 PortalInfo;
 
-uniform samplerBuffer DrawListPlanes;
+TFE_DECLARE_FBUFFER(DrawListPlanes);
 #ifdef OPT_TRUE_COLOR
 uniform sampler2D BasePalette;
 #endif
 
 // Vertex Data
-out float gl_ClipDistance[8];
+#include "Shaders/clipDistance.h"
 in vec3 vtx_pos;
 in vec2 vtx_uv;
 in vec4 vtx_color;
@@ -48,12 +50,12 @@ void main()
 	unpackPortalInfo(PortalInfo.x, portalOffset, portalCount);
 	for (int i = 0; i < int(portalCount) && i < 8; i++)
 	{
-		vec4 plane = texelFetch(DrawListPlanes, int(portalOffset) + i);
-		gl_ClipDistance[i] = dot(vec4(worldPos.xyz, 1.0), plane);
+		vec4 plane = tfe_fetchFBuffer(DrawListPlanes, int(portalOffset) + i);
+		TFE_CLIP_SET(i, dot(vec4(worldPos.xyz, 1.0), plane));
 	}
 	for (int i = int(portalCount); i < 8; i++)
 	{
-		gl_ClipDistance[i] = 1.0;
+		TFE_CLIP_SET(i, 1.0);
 	}
 
 	// Transform from world to view space.

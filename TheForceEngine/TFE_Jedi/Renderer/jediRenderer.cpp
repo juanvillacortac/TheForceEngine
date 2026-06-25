@@ -23,6 +23,7 @@
 #include <TFE_Asset/spriteAsset_Jedi.h>
 #include <TFE_Asset/modelAsset_jedi.h>
 #include <TFE_FrontEndUI/console.h>
+#include <TFE_RenderShared/texturePacker.h>
 
 namespace TFE_Jedi
 {
@@ -171,6 +172,26 @@ namespace TFE_Jedi
 	{
 		s_rendererType = type;
 		render_setResolution();
+	}
+
+	void renderer_fallbackToSoftware(const char* reason)
+	{
+		if (s_rendererType == RENDERER_SOFTWARE)
+		{
+			return;
+		}
+
+		TFE_System::logWrite(LOG_ERROR, "Renderer", "%s Using software renderer instead.", reason ? reason : "GPU renderer failed.");
+		TFE_Settings::getGraphicsSettings()->rendererIndex = RENDERER_SOFTWARE;
+		s_rendererType = RENDERER_SOFTWARE;
+		s_sectorRenderer = nullptr;
+		screen_enableGPU(false);
+		render_setResolution(true);
+	}
+
+	bool renderer_isGpuActive()
+	{
+		return s_rendererType == RENDERER_HARDWARE && s_subRenderer == TSR_CLASSIC_GPU;
 	}
 
 	RendererType renderer_getType()
@@ -336,11 +357,18 @@ namespace TFE_Jedi
 				screenGPU_setHudTextureCallbacks((s32)s_hudTextureCallbacks.size(), s_hudTextureCallbacks.data(), updateTexturePacking);
 				s_sectorRenderer = sectorRendererGpu;
 				sectorRendererGpu->flushCache();
-				screenGPU_init();
+				if (!screenGPU_init())
+				{
+					return JTRUE;
+				}
 			}
 			else if (updateTexturePacking)
 			{
 				screenGPU_setHudTextureCallbacks((s32)s_hudTextureCallbacks.size(), s_hudTextureCallbacks.data(), true);
+			}
+			if (s_rendererType != RENDERER_HARDWARE)
+			{
+				return JTRUE;
 			}
 			screen_enableGPU(true);
 			RClassic_GPU::changeResolution(width, height);
@@ -401,11 +429,14 @@ namespace TFE_Jedi
 				TFE_Sectors_GPU* sectorRendererGpu = (TFE_Sectors_GPU*)renderer_getSectorRenderer(TSR_CLASSIC_GPU);
 				screenGPU_setHudTextureCallbacks((s32)s_hudTextureCallbacks.size(), s_hudTextureCallbacks.data());
 				s_sectorRenderer = sectorRendererGpu;
-				
+
 				u32 width, height;
 				vfb_getResolution(&width, &height);
+				if (!screenGPU_init())
+				{
+					return JTRUE;
+				}
 				screen_enableGPU(true);
-				screenGPU_init();
 				RClassic_GPU::setupInitCameraAndLights(width, height);
 			} break;
 		}
@@ -479,6 +510,11 @@ namespace TFE_Jedi
 		}
 		if (s_subRenderer == TSR_CLASSIC_GPU)
 		{
+			if (!texturepacker_flushGpu())
+			{
+				renderer_fallbackToSoftware("GPU texture atlas upload failed.");
+				return;
+			}
 			vfb_bindRenderTarget(/*clearColor*/s_showWireframe);
 
 			u32 width, height;
@@ -562,7 +598,13 @@ namespace TFE_Jedi
 		// Recursively draws sectors and their contents (sprites, 3D objects).
 		{
 			TFE_ZONE("Sector Draw");
+			const TFE_SubRenderer subRendererBefore = s_subRenderer;
 			s_sectorRenderer->prepare();
+			if (s_subRenderer != subRendererBefore)
+			{
+				s_sectorRenderer = renderer_getSectorRenderer(s_subRenderer);
+				s_sectorRenderer->prepare();
+			}
 			s_sectorRenderer->draw(sector);
 		}
 	}

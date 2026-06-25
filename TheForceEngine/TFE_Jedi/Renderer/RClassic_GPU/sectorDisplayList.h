@@ -6,6 +6,7 @@
 #include <TFE_System/memoryPool.h>
 #include <TFE_Jedi/Math/fixedPoint.h>
 #include <TFE_Jedi/Math/core_math.h>
+#include "gpu_display_limits.h"
 #include "sbuffer.h"
 
 namespace TFE_Jedi
@@ -32,8 +33,8 @@ namespace TFE_Jedi
 	enum Contants
 	{
 		MAX_PORTAL_PLANES = 8,  // Minimum custom clipping plane limit for OpenGL 3.3
-		MAX_DISP_ITEMS = 65536,
-		MAX_BUFFER_SIZE = 65536,
+		MAX_DISP_ITEMS = TFE_GPU_MAX_DISP_ITEMS,
+		MAX_BUFFER_SIZE = TFE_GPU_MAX_BUFFER_SIZE,
 	};
 
 	struct GPUCachedSector
@@ -45,7 +46,7 @@ namespace TFE_Jedi
 		s32 wallStart;
 	};
 
-	void sdisplayList_init(s32* posIndex, s32* dataIndex, s32 planesIndex);
+	bool sdisplayList_init(s32* posIndex, s32* dataIndex, s32 planesIndex);
 	void sdisplayList_destroy();
 
 	void sdisplayList_clear();

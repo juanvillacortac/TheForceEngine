@@ -8,14 +8,35 @@
 
 namespace TFE_DarkForces
 {
+	enum MenuHandheldNav
+	{
+		MENU_NAV_UP = 0,
+		MENU_NAV_DOWN,
+		MENU_NAV_LEFT,
+		MENU_NAV_RIGHT,
+	};
+
 	void menu_init();
 	void menu_destroy();
 	void menu_resetState();
 
 	void menu_handleMousePosition();
+	void menu_updateGamepadPointerState();
+	void menu_moveHandheldCursor(Vec2i* cursorPos, s32 width, s32 height);
+	void menu_handheldNavNewFrame();
+	JBool menu_handheldNavDown(MenuHandheldNav dir);
+	JBool menu_handheldNavPressed(MenuHandheldNav dir);
+	JBool  menu_isHandheld();
+	JBool  menu_shouldDrawCursor();
+	JBool  menu_handheldActivatePressed();
+	JBool  menu_handheldCancelPressed();
+	JBool  menu_pointerPressed();
+	JBool  menu_pointerDown();
 	void menu_blitCursor(s32 x, s32 y, u8* framebuffer);
 	void menu_resetCursor();
 	u8*  menu_startupDisplay();
+	// Upload a 768-byte VGA palette (pltt format) to the GPU, matching Landru lpalette_setVgaPalette.
+	void menu_setPaletteFromPltt(const u8* pal768);
 
 	JBool menu_openResourceArchive(const char* name);
 	void  menu_closeResourceArchive();

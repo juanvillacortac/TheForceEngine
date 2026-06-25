@@ -2,14 +2,16 @@ uniform vec3 CameraPos;
 uniform mat3 CameraView;
 uniform mat4 CameraProj;
 
-uniform samplerBuffer  Sectors;
-uniform samplerBuffer  Walls;
-uniform samplerBuffer  DrawListPos;
-uniform usamplerBuffer DrawListData;
-uniform samplerBuffer  DrawListPlanes;	// Top and Bottom planes for each portal.
+#include "Shaders/bufferAccess.h"
+
+TFE_DECLARE_FBUFFER(Sectors);
+TFE_DECLARE_FBUFFER(Walls);
+TFE_DECLARE_FBUFFER(DrawListPos);
+TFE_DECLARE_UBUFFER(DrawListData);
+TFE_DECLARE_FBUFFER(DrawListPlanes);	// Top and Bottom planes for each portal.
 
 // in int gl_VertexID;
-out float gl_ClipDistance[8];
+#include "Shaders/clipDistance.h"
 flat out vec4 Frag_Uv;
 out vec3 Frag_Pos;
 out vec4 Texture_Data;
@@ -31,8 +33,8 @@ void main()
 	int vertexId  = gl_VertexID & 3;
 
 	// Read part position and data.
-	vec4 positions = texelFetch(DrawListPos, partIndex);
-	uvec4 data = texelFetch(DrawListData, partIndex);
+	vec4 positions = tfe_fetchFBuffer(DrawListPos, partIndex);
+	uvec4 data = tfe_fetchUBuffer(DrawListData, partIndex);
 
 	// Unpack part data.
 	bool sky = (data.x & 512u) != 0u;
@@ -57,7 +59,7 @@ void main()
 	Frag_TextureId = int(data.w & 65535u);
 
 	// Get the current sector heights.
-	vec4 sectorData   = texelFetch(Sectors, sectorId*2);
+	vec4 sectorData   = tfe_fetchFBuffer(Sectors, sectorId*2);
 	float floorHeight = sectorData.x;
 	float ceilHeight  = sectorData.y;
 	float sectorAmbient = sectorData.z;
@@ -83,15 +85,15 @@ void main()
 		vtx_uv.y = 0.0;
 		if (partId == 7)  // Mid Sign
 		{
-			vtx_uv.zw = texelFetch(Walls, wallId*3 + 1).zw;
+			vtx_uv.zw = tfe_fetchFBuffer(Walls, wallId*3 + 1).zw;
 			// Add a small z bias to avoid issues with the wall when clamped.
 			zbias = -0.00005;
 		}
 		else if (partId == 8) // Top Sign
 		{
-			vtx_uv.zw = texelFetch(Walls, wallId*3 + 1).zw;
+			vtx_uv.zw = tfe_fetchFBuffer(Walls, wallId*3 + 1).zw;
 
-			float nextTop = texelFetch(Sectors, nextId*2).y;
+			float nextTop = tfe_fetchFBuffer(Sectors, nextId*2).y;
 			float curTop = min(floorHeight, max(nextTop, ceilHeight));
 			vtx_pos.y = (vertexId < 2) ? ceilHeight : curTop;
 			texBase = nextTop;
@@ -100,9 +102,9 @@ void main()
 		}
 		else if (partId == 9) // Bottom Sign
 		{
-			vtx_uv.zw = texelFetch(Walls, wallId*3 + 1).zw;
+			vtx_uv.zw = tfe_fetchFBuffer(Walls, wallId*3 + 1).zw;
 
-			float nextBot = texelFetch(Sectors, nextId*2).x;
+			float nextBot = tfe_fetchFBuffer(Sectors, nextId*2).x;
 			float curBot = max(ceilHeight, min(nextBot, floorHeight));
 			vtx_pos.y = (vertexId < 2) ? curBot : floorHeight;
 			// Add a small z bias to avoid issues with the wall when clamped.
@@ -110,12 +112,12 @@ void main()
 		}
 		else  // Transparent Mid-texture
 		{
-			vtx_uv.zw = texelFetch(Walls, wallId*3 + 1).xy;
+			vtx_uv.zw = tfe_fetchFBuffer(Walls, wallId*3 + 1).xy;
 			vtx_uv.y = 2.0;
 
 			if (nextId < 4194303)	//1<<22 - 1
 			{
-				vec2 nextHeights = texelFetch(Sectors, nextId*2).xy;
+				vec2 nextHeights = tfe_fetchFBuffer(Sectors, nextId*2).xy;
 				float y0;
 				if (stretchToTop)
 				{
@@ -124,7 +126,7 @@ void main()
 					// Scale when looking up by view[1][1] which is 1.0 when looking straight and tends toward 0.0 as looking up or down.
 					d /= CameraView[1].y;
 					// Clamp to the maximum top.
-					y0 = CameraPos.y - min(100, d);
+					y0 = CameraPos.y - min(100.0, d);
 				}
 				else
 				{
@@ -145,7 +147,7 @@ void main()
 	#else  // !SECTOR_TRANSPARENT_PASS
 		if (partId == 1) // Top
 		{
-			vec2 nextTopBot = texelFetch(Sectors, nextId*2).xy;
+			vec2 nextTopBot = tfe_fetchFBuffer(Sectors, nextId*2).xy;
 			// Make sure the texture offsets are correct.
 			texBase = nextTopBot.y;
 			// Handle the case where the floor is higher than the ceiling.
@@ -154,24 +156,24 @@ void main()
 
 			float curTop = min(floorHeight, max(nextTop, ceilHeight));
 			vtx_pos.y = (vertexId < 2) ? ceilHeight : curTop;
-			vtx_uv.zw = texelFetch(Walls, wallId*3 + 2).zw;
+			vtx_uv.zw = tfe_fetchFBuffer(Walls, wallId*3 + 2).zw;
 			
 			if (sky)
 			{
-				vec4 sectorTexOffsets = texelFetch(Sectors, sectorId*2+1);
+				vec4 sectorTexOffsets = tfe_fetchFBuffer(Sectors, sectorId*2+1);
 				texture_data.xy = sectorTexOffsets.zw;
 			}
 		}
 		else if (partId == 2) // Bottom
 		{
-			float nextBot = texelFetch(Sectors, nextId*2).x;
+			float nextBot = tfe_fetchFBuffer(Sectors, nextId*2).x;
 			float curBot = max(ceilHeight, min(nextBot, floorHeight));
 			vtx_pos.y = (vertexId < 2) ? curBot : floorHeight;
-			vtx_uv.zw = texelFetch(Walls, wallId*3 + 2).xy;
+			vtx_uv.zw = tfe_fetchFBuffer(Walls, wallId*3 + 2).xy;
 
 			if (sky)
 			{
-				vec4 sectorTexOffsets = texelFetch(Sectors, sectorId*2+1);
+				vec4 sectorTexOffsets = tfe_fetchFBuffer(Sectors, sectorId*2+1);
 				texture_data.xy = sectorTexOffsets.xy;
 			}
 		}
@@ -195,22 +197,22 @@ void main()
 			else if (nextId == 3)   // floor but not really sky
 			{
 				vtx_pos.y = (vertexId >= 2) ? vtx_pos.y : CameraPos.y;
-				vtx_uv.zw = texelFetch(Walls, wallId*3 + 1).xy;
+				vtx_uv.zw = tfe_fetchFBuffer(Walls, wallId*3 + 1).xy;
 				sky = false;
 				flatIndex = 0;
 			}
 			else if (nextId == 4)	// ceiling but not really sky
 			{
 				vtx_pos.y = (vertexId < 2) ? vtx_pos.y : CameraPos.y;
-				vtx_uv.zw = texelFetch(Walls, wallId*3 + 1).xy;
+				vtx_uv.zw = tfe_fetchFBuffer(Walls, wallId*3 + 1).xy;
 				sky = false;
 			}
-			vec4 sectorTexOffsets = texelFetch(Sectors, sectorId*2+1);
+			vec4 sectorTexOffsets = tfe_fetchFBuffer(Sectors, sectorId*2+1);
 			texture_data.xy = (flatIndex == 0) ? sectorTexOffsets.xy : sectorTexOffsets.zw;
 		}
 		else
 		{
-			vtx_uv.zw = texelFetch(Walls, wallId*3 + 1).xy;
+			vtx_uv.zw = tfe_fetchFBuffer(Walls, wallId*3 + 1).xy;
 		}
 
 		vtx_uv.y = sky ? 3.0 : 2.0;
@@ -218,7 +220,7 @@ void main()
 
 		if (!sky)
 		{
-			texture_data = texelFetch(Walls, wallId*3);
+			texture_data = tfe_fetchFBuffer(Walls, wallId*3);
 		}
 		vtx_uv.x = texBase;
 		
@@ -257,7 +259,7 @@ void main()
 		vtx_uv.x = planeHeight - CameraPos.y;
 		vtx_uv.y = sky ? 3.0 : 1.0;
 
-		vec4 sectorTexOffsets = texelFetch(Sectors, sectorId*2+1);
+		vec4 sectorTexOffsets = tfe_fetchFBuffer(Sectors, sectorId*2+1);
 		texture_data.xy = (flatIndex == 0) ? sectorTexOffsets.xy : sectorTexOffsets.zw;
 
 		// Add a small z bias to flats to avoid seams.
@@ -287,7 +289,7 @@ void main()
 		vtx_uv.x = planeHeight - CameraPos.y;
 		vtx_uv.y = sky ? 3.0 : 1.0;
 
-		vec4 sectorTexOffsets = texelFetch(Sectors, sectorId*2+1);
+		vec4 sectorTexOffsets = tfe_fetchFBuffer(Sectors, sectorId*2+1);
 		texture_data.xy = (flatIndex == 0) ? sectorTexOffsets.xy : sectorTexOffsets.zw;
 	}
 	#endif  // !SECTOR_TRANSPARENT_PASS
@@ -295,12 +297,12 @@ void main()
 	// Clipping.
 	for (int i = 0; i < int(portalCount) && i < 8; i++)
 	{
-		vec4 plane = texelFetch(DrawListPlanes, int(portalOffset) + i);
-		gl_ClipDistance[i] = dot(vec4(vtx_pos.xyz, 1.0), plane);
+		vec4 plane = tfe_fetchFBuffer(DrawListPlanes, int(portalOffset) + i);
+		TFE_CLIP_SET(i, dot(vec4(vtx_pos.xyz, 1.0), plane));
 	}
 	for (int i = int(portalCount); i < 8; i++)
 	{
-		gl_ClipDistance[i] = 1.0;
+		TFE_CLIP_SET(i, 1.0);
 	}
 	
 	Frag_Pos = vtx_pos - CameraPos;

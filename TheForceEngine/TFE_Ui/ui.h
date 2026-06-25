@@ -25,6 +25,10 @@ typedef std::vector<std::string> FileResult;
 namespace TFE_Ui
 {
 
+	bool isHandheld();
+	void focusWindowByName(const char* name);
+	void handleHandheldConfigWindowFocus();
+
 	bool init(void* window, void* context, s32 uiScale = 100);
 	void shutdown();
 

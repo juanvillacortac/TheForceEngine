@@ -27,7 +27,7 @@ struct ShaderBufferDef
 class ShaderBuffer
 {
 public:
-	ShaderBuffer() : m_stride(0), m_count(0), m_size(0), m_initialized(false) {}
+	ShaderBuffer() : m_stride(0), m_count(0), m_size(0), m_gpuHandle{0, 0}, m_initialized(false), m_useTexture2D(false), m_byteTexture2D(false), m_tex2dWidth(0), m_tex2dHeight(0) {}
 	~ShaderBuffer();
 
 	bool create(u32 count, const ShaderBufferDef& bufferDef, bool dynamic, void* initData = nullptr);
@@ -36,6 +36,9 @@ public:
 	void update(const void* buffer, size_t size);
 	void bind(s32 bindPoint) const;
 	void unbind(s32 bindPoint) const;
+
+	inline bool isInitialized() const { return m_initialized; }
+	inline u32 getTextureHandle() const { return m_gpuHandle[1]; }
 
 	inline u32 getHandle() const { return m_gpuHandle[0]; }
 
@@ -49,4 +52,8 @@ private:
 	u32 m_gpuHandle[2];
 	bool m_dynamic;
 	bool m_initialized;
+	bool m_useTexture2D;
+	bool m_byteTexture2D;
+	u32 m_tex2dWidth;
+	u32 m_tex2dHeight;
 };

@@ -1,4 +1,5 @@
 #include <TFE_System/profiler.h>
+#include <TFE_System/system.h>
 #include <TFE_Jedi/Math/fixedPoint.h>
 #include <TFE_Jedi/Math/core_math.h>
 #include <TFE_Jedi/Renderer/jediRenderer.h>
@@ -60,6 +61,8 @@ namespace TFE_Jedi
 		bool trueColor = false;
 	};
 	static ShaderSettingsSDGPU s_shaderSettings = {};
+	static bool s_scrQuadShaderOk = false;
+	static bool s_forceIndexedPalette = false;
 
 	enum Constants
 	{
@@ -85,6 +88,7 @@ namespace TFE_Jedi
 
 		if (!s_scrQuadShader.load("Shaders/gpu_render_quad.vert", "Shaders/gpu_render_quad.frag", defineCount, defines, SHADER_VER_STD))
 		{
+			s_scrQuadShaderOk = false;
 			return false;
 		}
 
@@ -103,10 +107,11 @@ namespace TFE_Jedi
 		s_scrQuadShader.bindTextureNameToSlot("Textures",     2);
 		s_scrQuadShader.bindTextureNameToSlot("TextureTable", 3);
 
+		s_scrQuadShaderOk = true;
 		return true;
 	}
 
-	void screenGPU_init()
+	bool screenGPU_init()
 	{
 		if (!s_initialized)
 		{
@@ -134,9 +139,15 @@ namespace TFE_Jedi
 			// Shaders and variables.
 			s_shaderSettings.bloom = TFE_Settings::getGraphicsSettings()->bloomEnabled;
 			s_shaderSettings.trueColor = TFE_Settings::getGraphicsSettings()->colorMode == COLORMODE_TRUE_COLOR;
-			screenGPU_loadShaders();
+			if (!screenGPU_loadShaders())
+			{
+				TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "Screen quad shader init failed.");
+				renderer_fallbackToSoftware("Screen quad shader init failed.");
+				return false;
+			}
+			s_initialized = true;
 		}
-		s_initialized = true;
+		return s_scrQuadShaderOk;
 	}
 
 	void screenGPU_destroy()
@@ -152,13 +163,21 @@ namespace TFE_Jedi
 		s_scrQuads = nullptr;
 		s_initialized = false;
 		s_shaderSettings = {};
+		s_scrQuadShaderOk = false;
 	}
 
 	void screenGPU_setHudTextureCallbacks(s32 count, TextureListCallback* callbacks, bool forceAllocation)
 	{
 		if (count)
 		{
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Packing HUD textures (%d callbacks)...", count);
 			TexturePacker* texturePacker = texturepacker_getGlobal();
+			if (!texturePacker)
+			{
+				TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "HUD texture packer init failed.");
+				renderer_fallbackToSoftware("HUD texture packer init failed.");
+				return;
+			}
 			if (forceAllocation)
 			{
 				texturepacker_reset();
@@ -172,6 +191,7 @@ namespace TFE_Jedi
 				}
 				texturepacker_commit();
 				texturepacker_reserveCommitedPages(texturePacker);
+				TFE_System::logWrite(LOG_MSG, "GPU Renderer", "HUD texture pack complete (GPU upload deferred).");
 			}
 		}
 	}
@@ -195,64 +215,83 @@ namespace TFE_Jedi
 		{
 			s_shaderSettings.bloom = bloomEnabled;
 			s_shaderSettings.trueColor = trueColorEnabled;
-			screenGPU_loadShaders();
+			if (!screenGPU_loadShaders())
+			{
+				TFE_System::logWrite(LOG_ERROR, "GPU Renderer", "Screen quad shader reload failed.");
+				renderer_fallbackToSoftware("Screen quad shader reload failed.");
+			}
 		}
+	}
+
+	void screenGPU_setForceIndexedPalette(bool force)
+	{
+		s_forceIndexedPalette = force;
 	}
 
 	void screenGPU_endQuads()
 	{
-		if (s_screenQuadCount)
+		if (!s_screenQuadCount || !s_scrQuadShaderOk || !s_scrQuadShader.getHandle())
 		{
-			s_scrQuadVb.update(s_scrQuads, sizeof(ScreenQuadVertex) * s_screenQuadCount * 4);
-			TFE_RenderState::setStateEnable(false, STATE_CULLING | STATE_DEPTH_TEST | STATE_DEPTH_WRITE | STATE_BLEND);
-			
-			s_scrQuadShader.bind();
-			s_scrQuadVb.bind();
-			s_scrQuadIb.bind();
-
-			// Bind Uniforms & Textures.
-			const f32 scaleX = 2.0f / f32(s_scrQuadsWidth);
-			const f32 scaleY = 2.0f / f32(s_scrQuadsHeight);
-			const f32 offsetX = -1.0f;
-			const f32 offsetY = -1.0f;
-
-			const f32 scaleOffset[] = { scaleX, scaleY, offsetX, offsetY };
-			s_scrQuadShader.setVariable(s_svScaleOffset, SVT_VEC4, scaleOffset);
-
-			if (s_sIndexedColors >= 0)
-			{
-				s_scrQuadShader.setVariableArray(s_sIndexedColors, SVT_VEC4, (f32*)s_indexedColors, s_indexColorCount);
-			}
-			if (s_palFxLumMask >= 0 && s_palFxFlash >= 0)
-			{
-				Vec3f lumMask, palFx;
-				renderer_getPalFx(&lumMask, &palFx);
-
-				s_scrQuadShader.setVariable(s_palFxLumMask, SVT_VEC3, lumMask.m);
-				s_scrQuadShader.setVariable(s_palFxFlash, SVT_VEC3, palFx.m);
-			}
-
-			const TextureGpu* palette  = TFE_RenderBackend::getPaletteTexture();
-			const TextureGpu* colormap = TFE_Sectors_GPU::getColormap();
-			colormap->bind(0);
-			if (s_shaderSettings.trueColor)
-			{
-				s_trueColorMapping->bind(1);
-			}
-			else
-			{
-				palette->bind(1);
-			}
-
-			TexturePacker* texturePacker = texturepacker_getGlobal();
-			texturePacker->texture->bind(2);
-			texturePacker->textureTableGPU.bind(3);
-
-			TFE_RenderBackend::drawIndexedTriangles(2 * s_screenQuadCount, sizeof(u16));
-
-			s_scrQuadVb.unbind();
-			s_scrQuadShader.unbind();
+			return;
 		}
+
+		s_scrQuadVb.update(s_scrQuads, sizeof(ScreenQuadVertex) * s_screenQuadCount * 4);
+		TFE_RenderState::setStateEnable(false, STATE_CULLING | STATE_DEPTH_TEST | STATE_DEPTH_WRITE | STATE_BLEND);
+
+		s_scrQuadShader.bind();
+		s_scrQuadVb.bind();
+		s_scrQuadIb.bind();
+
+		// Bind Uniforms & Textures.
+		const f32 scaleX = 2.0f / f32(s_scrQuadsWidth);
+		const f32 scaleY = 2.0f / f32(s_scrQuadsHeight);
+		const f32 offsetX = -1.0f;
+		const f32 offsetY = -1.0f;
+
+		const f32 scaleOffset[] = { scaleX, scaleY, offsetX, offsetY };
+		s_scrQuadShader.setVariable(s_svScaleOffset, SVT_VEC4, scaleOffset);
+
+		if (s_sIndexedColors >= 0)
+		{
+			s_scrQuadShader.setVariableArray(s_sIndexedColors, SVT_VEC4, (f32*)s_indexedColors, s_indexColorCount);
+		}
+		if (s_palFxLumMask >= 0 && s_palFxFlash >= 0)
+		{
+			Vec3f lumMask, palFx;
+			renderer_getPalFx(&lumMask, &palFx);
+
+			s_scrQuadShader.setVariable(s_palFxLumMask, SVT_VEC3, lumMask.m);
+			s_scrQuadShader.setVariable(s_palFxFlash, SVT_VEC3, palFx.m);
+		}
+
+		const TextureGpu* palette  = TFE_RenderBackend::getPaletteTexture();
+		const TextureGpu* colormap = TFE_Sectors_GPU::getColormap();
+		if (!colormap)
+		{
+			return;
+		}
+		colormap->bind(0);
+		if (s_shaderSettings.trueColor && !s_forceIndexedPalette)
+		{
+			if (!s_trueColorMapping)
+			{
+				return;
+			}
+			s_trueColorMapping->bind(1);
+		}
+		else
+		{
+			palette->bind(1);
+		}
+
+		TexturePacker* texturePacker = texturepacker_getGlobal();
+		texturePacker->texture->bind(2);
+		texturepacker_bindTextureTable(3);
+
+		TFE_RenderBackend::drawIndexedTriangles(2 * s_screenQuadCount, sizeof(u16));
+
+		s_scrQuadVb.unbind();
+		s_scrQuadShader.unbind();
 	}
 		
 	void screenGPU_beginLines(u32 width, u32 height)

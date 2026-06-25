@@ -50,6 +50,8 @@ public:
 	void readCpu(u8* image);
 
 	inline u32 getHandle() const { return m_gpuHandle; }
+	// Transfer ownership of the GL texture name to the caller (used by ShaderBuffer on GLES).
+	u32 releaseHandle() { const u32 h = m_gpuHandle; m_gpuHandle = 0; return h; }
 
 private:
 	u32 m_width;

@@ -1,6 +1,7 @@
 #include "Shaders/filter.h"
 #include "Shaders/textureSampleFunc.h"
 #include "Shaders/lighting.h"
+#include "Shaders/clipDistanceFrag.h"
 
 uniform vec3 CameraPos;
 uniform vec3 CameraDir;
@@ -165,7 +166,7 @@ float computeShading(bool fullbright, vec3 cameraRelativePos)
 			if (worldAmbient < 31.0 || cameraLightSource != 0.0)
 			{
 				float lightSource = getLightRampValue(z, worldAmbient);
-				if (lightSource > 0)
+				if (lightSource > 0.0)
 				{
 					light += lightSource;
 				}
@@ -192,6 +193,7 @@ float getBayerIndex(vec2 uv)
 
 void main()
 {
+	TFE_APPLY_CLIP_DISCARD();
     vec3 cameraRelativePos = Frag_Pos;
 	bool sky = Frag_Uv.y > 2.5;
 	bool sign = false;
