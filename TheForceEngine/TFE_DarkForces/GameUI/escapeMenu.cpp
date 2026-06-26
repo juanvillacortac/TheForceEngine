@@ -139,11 +139,7 @@ namespace TFE_DarkForces
 
 		// Free memory
 		freeOffScreenBuffer(s_emState.framebufferCopy);
-		if (s_escLpalette)
-		{
-			lpalette_free(s_escLpalette);
-			s_escLpalette = nullptr;
-		}
+		s_escLpalette = nullptr;
 
 		// Clear State.
 		s_emState = {};

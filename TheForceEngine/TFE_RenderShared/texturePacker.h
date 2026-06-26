@@ -90,4 +90,6 @@ namespace TFE_Jedi
 
 	void texturepacker_setIndexStart(s32 colorIndexStart = -1);
 	void texturepacker_setConversionPalette(s32 index, s32 bpp, const u8* input);
+	// Atlas page width (2048 handheld/GLES, 4096 desktop).
+	s32 texturepacker_getPageWidth();
 }  // TFE_Jedi

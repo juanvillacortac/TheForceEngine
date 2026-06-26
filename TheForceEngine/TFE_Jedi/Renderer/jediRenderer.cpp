@@ -533,6 +533,47 @@ namespace TFE_Jedi
 		}
 	}
 
+	void renderer_prepareLevel()
+	{
+		if (s_rendererType != RENDERER_HARDWARE) { return; }
+
+		if (!s_sectorRenderer || s_subRenderer != TSR_CLASSIC_GPU)
+		{
+			setSubRenderer(TSR_CLASSIC_GPU);
+		}
+		TFE_Sectors_GPU* gpuRenderer = (TFE_Sectors_GPU*)renderer_getSectorRenderer(TSR_CLASSIC_GPU);
+		if (!gpuRenderer) { return; }
+		s_sectorRenderer = gpuRenderer;
+
+		// Always take the full level-init path so level textures are repacked with the
+		// current conversion palette (atlas colors are baked; sky uses the live palette).
+		gpuRenderer->reset();
+
+		vfb_bindRenderTarget(false);
+		if (!texturepacker_flushGpu())
+		{
+			renderer_fallbackToSoftware("GPU texture atlas upload failed.");
+			vfb_unbindRenderTarget();
+			return;
+		}
+
+		const TFE_SubRenderer subRendererBefore = s_subRenderer;
+		s_sectorRenderer->prepare();
+		if (s_subRenderer != subRendererBefore)
+		{
+			s_sectorRenderer = renderer_getSectorRenderer(s_subRenderer);
+			if (s_sectorRenderer)
+			{
+				s_sectorRenderer->prepare();
+			}
+		}
+		if (s_rendererType == RENDERER_HARDWARE)
+		{
+			vfb_forceToBlack();
+		}
+		vfb_unbindRenderTarget();
+	}
+
 	void drawWorld(u8* display, RSector* sector, const u8* colormap, const u8* lightSourceRamp)
 	{
 		// Clear the top pixel row.

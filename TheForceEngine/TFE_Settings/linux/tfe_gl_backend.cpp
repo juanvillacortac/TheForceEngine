@@ -39,11 +39,7 @@ TFE_GL_Backend tfe_PreferGLBackend()
 		return TFE_GL_BACKEND_DESKTOP;
 	if (tfe_IsLinuxKmsDisplay() || tfe_parse_handheld_env())
 		return TFE_GL_BACKEND_GLES;
-#if defined(__aarch64__)
-	return TFE_GL_BACKEND_GLES;
-#else
 	return TFE_GL_BACKEND_DESKTOP;
-#endif
 #else
 	return TFE_GL_BACKEND_DESKTOP;
 #endif

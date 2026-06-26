@@ -52,6 +52,7 @@ namespace TFE_Jedi
 	void renderer_setType(RendererType type = RENDERER_SOFTWARE);
 	void renderer_fallbackToSoftware(const char* reason);
 	bool renderer_isGpuActive();
+	void renderer_prepareLevel();
 	void setupInitCameraAndLights();
 	void renderer_computeCameraTransform(RSector* sector, angle14_32 pitch, angle14_32 yaw, fixed16_16 camX, fixed16_16 camY, fixed16_16 camZ);
 		

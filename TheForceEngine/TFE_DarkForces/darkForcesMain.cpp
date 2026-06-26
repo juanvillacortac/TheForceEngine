@@ -358,6 +358,14 @@ namespace TFE_DarkForces
 		briefingList_freeBuffer();
 		cutsceneList_freeBuffer();
 		cutsceneFilm_reset();
+
+		// Free Landru-owned UI palettes before tearing down the Landru allocator.
+		agentMenu_resetState();
+		escapeMenu_resetState();
+		menu_resetState();
+		pda_resetState();
+		vue_resetState();
+
 		lsystem_destroy();
 		bitmap_clearAll();
 
@@ -375,12 +383,6 @@ namespace TFE_DarkForces
 		actor_exitState();
 		weapon_resetState();
 		renderer_resetState();
-		agentMenu_resetState();
-		menu_resetState();
-		pda_resetState();
-		escapeMenu_resetState();
-		vue_resetState();
-		lsystem_destroy();
 		hud_reset();
 
 		// TFE
@@ -1518,7 +1520,7 @@ namespace TFE_DarkForces
 		agent_levelEndTask();
 		lmusic_reset();	// Fix a Dark Forces bug where music won't play when entering a cutscene again without restarting.
 		pda_cleanup();
-		reticle_enable(true);
+		reticle_enable(false);
 
 		region_clear(s_levelRegion);
 		bitmap_clearLevelData();
@@ -1636,6 +1638,7 @@ namespace TFE_DarkForces
 		time_pause(JFALSE);
 		if (!writeState)
 		{
+			mission_notifySaveLoadComplete();
 			task_updateTime();
 			mission_pause(JFALSE);
 		}

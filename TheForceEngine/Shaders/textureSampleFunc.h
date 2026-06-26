@@ -12,6 +12,18 @@ uniform uint TextureSettings;
 
 #ifdef OPT_TRUE_COLOR
 uniform vec4 TexSamplingParam;
+// TexSamplingParam.x = bilinear sharpness, TexSamplingParam.y = 1/atlasPageWidth
+
+vec3 normalizeAtlasUv(vec3 uv3)
+{
+	float atlasRcp = TexSamplingParam.y;
+	return uv3 * vec3(atlasRcp, atlasRcp, 1.0);
+}
+
+vec2 normalizeAtlasUvDeriv(vec2 uv)
+{
+	return uv * TexSamplingParam.y;
+}
 #endif
 
 // Fragment-only: uses gl_FragCoord (must not live in lighting.h — vertex shaders include that too).
@@ -154,10 +166,10 @@ vec4 sampleTexture(int id, vec2 uv)
 	uv3.z = float(sampleData.x >> 12);
 
 #ifdef OPT_MIPMAPPING
-	baseUv /= vec2(4096.0, 4096.0);
-	return textureGrad(Textures, uv3 / vec3(4096.0, 4096.0, 1.0), dFdx(baseUv), dFdy(baseUv));
+	baseUv = normalizeAtlasUvDeriv(baseUv);
+	return textureGrad(Textures, normalizeAtlasUv(uv3), dFdx(baseUv), dFdy(baseUv));
 #else
-	return textureLod(Textures, uv3 / vec3(4096.0, 4096.0, 1.0), 0.0);
+	return textureLod(Textures, normalizeAtlasUv(uv3), 0.0);
 #endif
 }
 
@@ -212,13 +224,13 @@ vec4 sampleTexture(int id, vec2 uv, bool sky, bool flip, bool applyFlatWarp, out
 	// Compute the pre-wrapped partial derivatives.
 	if (!sky)
 	{
-		baseUv /= vec2(4096.0, 4096.0);
+		baseUv = normalizeAtlasUvDeriv(baseUv);
 		dfdx = dFdx(baseUv);
 		dfdy = dFdy(baseUv);
 	}
-	return textureGrad(Textures, uv3 / vec3(4096.0, 4096.0, 1.0), dfdx, dfdy);
+	return textureGrad(Textures, normalizeAtlasUv(uv3), dfdx, dfdy);
 #else
-	return textureLod(Textures, uv3 / vec3(4096.0, 4096.0, 1.0), 0.0);
+	return textureLod(Textures, normalizeAtlasUv(uv3), 0.0);
 #endif
 }
 
@@ -234,7 +246,7 @@ vec4 sampleTextureClamp(int id, vec2 uv)
 	uv3.xy += vec2(sampleData.xy & ivec2(4095));
 	uv3.z = float(sampleData.x >> 12);
 
-	return textureLod(Textures, uv3 / vec3(4096.0, 4096.0, 1.0), 0.0);
+	return textureLod(Textures, normalizeAtlasUv(uv3), 0.0);
 }
 
 vec4 sampleTextureClamp(int id, vec2 uv, bool opaque)
@@ -258,10 +270,10 @@ vec4 sampleTextureClamp(int id, vec2 uv, bool opaque)
 
 #ifdef OPT_MIPMAPPING
 	// Compute the pre-wrapped partial derivatives.
-	baseUv /= vec2(4096.0, 4096.0);
-	return textureGrad(Textures, uv3 / vec3(4096.0, 4096.0, 1.0), dFdx(baseUv), dFdy(baseUv));
+	baseUv = normalizeAtlasUvDeriv(baseUv);
+	return textureGrad(Textures, normalizeAtlasUv(uv3), dFdx(baseUv), dFdy(baseUv));
 #else
-	return textureLod(Textures, uv3 / vec3(4096.0, 4096.0, 1.0), 0.0);
+	return textureLod(Textures, normalizeAtlasUv(uv3), 0.0);
 #endif
 }
 #else

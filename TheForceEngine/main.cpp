@@ -633,6 +633,11 @@ int main(int argc, char* argv[])
 
 	TFE_FrontEndUI::initConsole();
 
+	if (tfe_UseHandheld() && (firstRun || TFE_FrontEndUI::needsHandheldPortDefaults()))
+	{
+		TFE_FrontEndUI::applyHandheldPortDefaults();
+	}
+
 	// Mali and similar GLES drivers may lack fragment texture-buffer support required by the GPU renderer.
 	if (tfe_UseHandheld() && !OpenGL_Caps::deviceSupportsGpuRenderer())
 	{
@@ -670,10 +675,6 @@ int main(int argc, char* argv[])
 	// Start up the game and skip the title screen.
 	if (tfe_UseHandheld())
 	{
-		if (firstRun)
-		{
-			TFE_FrontEndUI::applyHandheldPortDefaults();
-		}
 		if (validatePath())
 		{
 			TFE_FrontEndUI::skipLauncherOnHandheld();

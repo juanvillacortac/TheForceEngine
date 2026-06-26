@@ -42,13 +42,15 @@ namespace TFE_DarkForces
 	void lpalette_destroy()
 	{
 		s_lpaletteInit = JFALSE;
+		// Loaded palettes (agent menu, etc.) live in the Landru region; drop the
+		// list without walking it so a stale node cannot fault during shutdown.
+		s_firstPal = nullptr;
 		lpalette_free(s_screenPal);
 		lpalette_free(s_srcPal);
 		lpalette_free(s_dstPal);
 		lpalette_free(s_workPal);
 		lpalette_free(s_videoPal);
 
-		s_firstPal  = nullptr;
 		s_workPal   = nullptr;
 		s_screenPal = nullptr;
 		s_srcPal    = nullptr;

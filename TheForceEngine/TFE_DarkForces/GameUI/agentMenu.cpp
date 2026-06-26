@@ -154,11 +154,9 @@ namespace TFE_DarkForces
 		s_agentMenuFrames = nullptr;
 		s_agentDlgFrames = nullptr;
 		s_framebuffer = nullptr;
-		if (s_agentLpalette)
-		{
-			lpalette_free(s_agentLpalette);
-			s_agentLpalette = nullptr;
-		}
+		// Palette memory is owned by the Landru region; do not landru_free here
+		// (lpalette list nodes can be stale and lpalette_free will segfault).
+		s_agentLpalette = nullptr;
 		delt_resetState();
 	}
 

@@ -25,8 +25,7 @@ static bool s_guiFrameActive;
 
 bool isHandheld()
 {
-	const char* env = std::getenv("TFE_HANDHELD");
-	return env && env[0] == '1';
+	return tfe_UseHandheld() != 0;
 }
 
 static void feedHandheldGamepad()

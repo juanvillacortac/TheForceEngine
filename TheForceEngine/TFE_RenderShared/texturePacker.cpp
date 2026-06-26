@@ -102,13 +102,22 @@ namespace TFE_Jedi
 		return tfe_UseGLES() && tfe_UseBufferTexture2D();
 	}
 
-	static s32 texturepacker_getPageWidth()
+	static s32 texturepacker_resolvePageWidth()
 	{
 		if (tfe_UseHandheld() || tfe_UseGLES())
 		{
 			return c_globalPageWidthHandheld;
 		}
 		return c_globalPageWidthDesktop;
+	}
+
+	s32 texturepacker_getPageWidth()
+	{
+		if (s_globalTexturePacker && s_globalTexturePacker->width > 0)
+		{
+			return s_globalTexturePacker->width;
+		}
+		return texturepacker_resolvePageWidth();
 	}
 
 	static s32 s_colorIndexStart = -1;
@@ -491,7 +500,8 @@ namespace TFE_Jedi
 				u32 dr = (r[0] + r[1] + r[2] + r[3]) >> 2;
 				u32 dg = (g[0] + g[1] + g[2] + g[3]) >> 2;
 				u32 db = (b[0] + b[1] + b[2] + b[3]) >> 2;
-				u32 da = (a[0] + a[1] + a[2] + a[3]) >> 2;
+				// Preserve emissive/alpha encoding when downsampling (do not average 0x7f/0xff).
+				u32 da = max(max(a[0], a[1]), max(a[2], a[3]));
 
 				dst[dstX] = dr | (dg << 8) | (db << 16) | (da << 24);
 			}
@@ -1749,7 +1759,7 @@ namespace TFE_Jedi
 	{
 		if (!s_globalTexturePacker)
 		{
-			const s32 pageWidth = texturepacker_getPageWidth();
+			const s32 pageWidth = texturepacker_resolvePageWidth();
 			TFE_System::logWrite(LOG_MSG, "TexturePacker", "Creating global packer (%dx%d)...", pageWidth, pageWidth);
 			s_globalTexturePacker = texturepacker_init(c_globalTexturePackerName, pageWidth, pageWidth);
 			if (!s_globalTexturePacker)

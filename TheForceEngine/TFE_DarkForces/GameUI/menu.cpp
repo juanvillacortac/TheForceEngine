@@ -10,6 +10,7 @@
 #include <TFE_Archive/archive.h>
 #include <TFE_Archive/lfdArchive.h>
 #include <TFE_Settings/settings.h>
+#include <TFE_Settings/linux/tfe_gl_backend.h>
 #include <TFE_Input/input.h>
 #include <TFE_RenderBackend/renderBackend.h>
 #include <TFE_Jedi/Math/core_math.h>
@@ -64,8 +65,7 @@ namespace TFE_DarkForces
 	///////////////////////////////////////////
 	JBool menu_isHandheld()
 	{
-		const char* env = std::getenv("TFE_HANDHELD");
-		return env && env[0] == '1';
+		return tfe_UseHandheld() ? JTRUE : JFALSE;
 	}
 
 	JBool menu_shouldDrawCursor()

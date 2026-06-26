@@ -42,6 +42,7 @@ namespace TFE_FrontEndUI
 
 	void setAppState(AppState state);
 	void applyHandheldPortDefaults();
+	bool needsHandheldPortDefaults();
 	void skipLauncherOnHandheld();
 	void enableConfigMenu();
 	AppState menuReturn();

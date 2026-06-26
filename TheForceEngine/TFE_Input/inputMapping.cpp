@@ -1,9 +1,11 @@
 #include <cstring>
+#include <cstdlib>
 
 #include "inputMapping.h"
 #include <TFE_Game/igame.h>
 #include <TFE_FileSystem/paths.h>
 #include <TFE_Settings/settings.h>
+#include <TFE_Settings/linux/tfe_gl_backend.h>
 #include <TFE_Input/replay.h>
 #include <TFE_DarkForces/hud.h>
 #include <TFE_DarkForces/player.h>
@@ -18,7 +20,8 @@ namespace TFE_Input
 		INPUT_ADD_DEADZONE  = 0x00020002,
 		INPUT_ADD_HIGH_DEF  = 0x00020003,
 		INPUT_DEMO_CONFIG   = 0x00020004,
-		INPUT_CUR_VERSION = INPUT_DEMO_CONFIG
+		INPUT_HANDHELD_PAD  = 0x00020005,
+		INPUT_CUR_VERSION = INPUT_HANDHELD_PAD
 	};
 
 	static const char* c_inputRemappingName = "tfe_input_remapping.bin";
@@ -106,14 +109,15 @@ namespace TFE_Input
 
 	static InputBinding s_defaultControllerBinds[] =
 	{
-		{ IAS_SYSTEM_MENU, ITYPE_CONTROLLER, CONTROLLER_BUTTON_RIGHTSTICK },
+		{ IAS_SYSTEM_MENU, ITYPE_CONTROLLER, CONTROLLER_BUTTON_GUIDE },
 
 		{ IADF_JUMP,   ITYPE_CONTROLLER, CONTROLLER_BUTTON_A },
 		{ IADF_RUN,    ITYPE_CONTROLLER, CONTROLLER_BUTTON_B },
 		{ IADF_CROUCH, ITYPE_CONTROLLER, CONTROLLER_BUTTON_X },
 		{ IADF_USE,    ITYPE_CONTROLLER, CONTROLLER_BUTTON_Y },
 
-		{ IADF_MENU_TOGGLE, ITYPE_CONTROLLER, CONTROLLER_BUTTON_GUIDE },
+		{ IADF_MENU_TOGGLE, ITYPE_CONTROLLER, CONTROLLER_BUTTON_START },
+		{ IADF_PDA_TOGGLE,  ITYPE_CONTROLLER, CONTROLLER_BUTTON_BACK },
 
 		{ IADF_PRIMARY_FIRE,   ITYPE_CONTROLLER_AXIS, AXIS_RIGHT_TRIGGER },
 		{ IADF_SECONDARY_FIRE, ITYPE_CONTROLLER_AXIS, AXIS_LEFT_TRIGGER },
@@ -136,6 +140,14 @@ namespace TFE_Input
 	vector <MouseButton> currentMouse;
 		
 	void addDefaultControlBinds();
+	void inputMapping_setControllerBinding(InputAction action, Button button);
+	void inputMapping_applyControllerAction(InputAction action, bool pressed, bool down);
+	bool inputMapping_isHandheld();
+	bool inputMapping_isDpadButton(Button button);
+	bool inputMapping_isUseModifierHeld();
+	bool inputMapping_shouldSkipHandheldDpadBind(InputBinding* bind);
+	void inputMapping_applyHandheldDpadMovement();
+	bool inputMapping_isMovementAction(InputAction action);
 			   
 	void inputMapping_startup()
 	{
@@ -300,6 +312,15 @@ namespace TFE_Input
 			inputMapping_addBinding(&s_defaultKeyboardBinds[IADF_DEMO_SLOWDOWN]);
 		}
 
+		// Handheld-friendly pad defaults: Guide=system menu, Start=pause, Select=PDA.
+		if (version < INPUT_HANDHELD_PAD)
+		{
+			inputMapping_setControllerBinding(IAS_SYSTEM_MENU, CONTROLLER_BUTTON_GUIDE);
+			inputMapping_setControllerBinding(IADF_MENU_TOGGLE, CONTROLLER_BUTTON_START);
+			inputMapping_setControllerBinding(IADF_PDA_TOGGLE, CONTROLLER_BUTTON_BACK);
+			inputMapping_serialize();
+		}
+
 		return true;
 	}
 
@@ -315,6 +336,140 @@ namespace TFE_Input
 		}
 
 		s_inputConfig.binds[index] = *binding;
+	}
+
+	void inputMapping_setControllerBinding(InputAction action, Button button)
+	{
+		for (u32 i = 0; i < s_inputConfig.bindCount; )
+		{
+			InputBinding* bind = &s_inputConfig.binds[i];
+			if (bind->action == action && bind->type == ITYPE_CONTROLLER)
+			{
+				inputMapping_removeBinding(i);
+			}
+			else
+			{
+				i++;
+			}
+		}
+
+		InputBinding binding = { action, ITYPE_CONTROLLER, button };
+		inputMapping_addBinding(&binding);
+	}
+
+	bool inputMapping_isHandheld()
+	{
+		return tfe_UseHandheld() != 0;
+	}
+
+	bool inputMapping_isDpadButton(Button button)
+	{
+		return button >= CONTROLLER_BUTTON_DPAD_UP && button <= CONTROLLER_BUTTON_DPAD_RIGHT;
+	}
+
+	bool inputMapping_isUseModifierHeld()
+	{
+		if (!(s_inputConfig.controllerFlags & CFLAG_ENABLE))
+		{
+			return false;
+		}
+
+		for (u32 i = 0; i < s_inputConfig.bindCount; i++)
+		{
+			InputBinding* bind = &s_inputConfig.binds[i];
+			if (bind->action == IADF_USE && bind->type == ITYPE_CONTROLLER && TFE_Input::buttonDown(bind->ctrlBtn))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool inputMapping_shouldSkipHandheldDpadBind(InputBinding* bind)
+	{
+		if (!inputMapping_isHandheld() || bind->type != ITYPE_CONTROLLER || !inputMapping_isDpadButton(bind->ctrlBtn))
+		{
+			return false;
+		}
+
+		const bool useHeld = inputMapping_isUseModifierHeld();
+		const bool movement = inputMapping_isMovementAction(bind->action);
+		if (movement && useHeld)
+		{
+			return true;
+		}
+		if (!movement && !useHeld)
+		{
+			return true;
+		}
+		return false;
+	}
+
+	void inputMapping_applyControllerAction(InputAction action, bool pressed, bool down)
+	{
+		if (pressed)
+		{
+			s_actions[action] = STATE_PRESSED;
+			recordEvent(action, KEY_UNKNOWN, true);
+		}
+		else if (down && s_actions[action] != STATE_PRESSED)
+		{
+			s_actions[action] = STATE_DOWN;
+			recordEvent(action, KEY_UNKNOWN, false);
+		}
+	}
+
+	void inputMapping_applyHandheldDpadMovement()
+	{
+		if (!inputMapping_isHandheld() || inputMapping_isUseModifierHeld())
+		{
+			return;
+		}
+		if (!(s_inputConfig.controllerFlags & CFLAG_ENABLE))
+		{
+			return;
+		}
+
+		static bool s_dpadMoveHeld = false;
+		static bool s_dpadStrafeHeld = false;
+
+		const bool dpadMoveHeld = TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_UP)
+			|| TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_DOWN);
+		const bool dpadStrafeHeld = TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_LEFT)
+			|| TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_RIGHT);
+
+		// Drive movement through digital actions. Do not keep calling setAxis() while
+		// the D-pad is held — injected values stick after release (no SDL re-center).
+		if (TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_UP))
+		{
+			inputMapping_applyControllerAction(IADF_FORWARD, TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_UP), true);
+		}
+		else if (TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_DOWN))
+		{
+			inputMapping_applyControllerAction(IADF_BACKWARD, TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_DOWN), true);
+		}
+
+		if (TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_LEFT))
+		{
+			inputMapping_applyControllerAction(IADF_STRAFE_LT, TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_LEFT), true);
+		}
+		else if (TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_RIGHT))
+		{
+			inputMapping_applyControllerAction(IADF_STRAFE_RT, TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_RIGHT), true);
+		}
+
+		// Clear any stale axis override left from an earlier D-pad press this session.
+		if (s_dpadMoveHeld && !dpadMoveHeld)
+		{
+			TFE_Input::setAxis(AXIS_LEFT_Y, 0.0f);
+		}
+		if (s_dpadStrafeHeld && !dpadStrafeHeld)
+		{
+			TFE_Input::setAxis(AXIS_LEFT_X, 0.0f);
+		}
+
+		s_dpadMoveHeld = dpadMoveHeld;
+		s_dpadStrafeHeld = dpadStrafeHeld;
 	}
 
 	void addDefaultControlBinds()
@@ -432,6 +587,11 @@ namespace TFE_Input
 						break;
 					}
 
+					if (inputMapping_shouldSkipHandheldDpadBind(bind))
+					{
+						break;
+					}
+
 					if (TFE_Input::buttonPressed(bind->ctrlBtn))
 					{
 						s_actions[bind->action] = STATE_PRESSED;
@@ -458,6 +618,8 @@ namespace TFE_Input
 				} break;
 			}			
 		}
+
+		inputMapping_applyHandheldDpadMovement();
 	}
 
 	void inputMapping_removeState(InputAction action)

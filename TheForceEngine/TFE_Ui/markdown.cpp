@@ -4,6 +4,7 @@
 #include <TFE_RenderBackend/renderBackend.h>
 #include <TFE_RenderBackend/textureGpu.h>
 #include <TFE_FileSystem/paths.h>
+#include <TFE_Settings/linux/tfe_gl_backend.h>
 #include "imGUI/imgui.h"
 #include "imGUI/imgui_markdown.h"
 
@@ -35,7 +36,7 @@ namespace TFE_Markdown
 	bool init(f32 baseFontSize)
 	{
 		ImGuiIO& io = ImGui::GetIO();
-		const bool handheld = (std::getenv("TFE_HANDHELD") && std::getenv("TFE_HANDHELD")[0] == '1');
+		const bool handheld = tfe_UseHandheld() != 0;
 
 		if (handheld)
 		{

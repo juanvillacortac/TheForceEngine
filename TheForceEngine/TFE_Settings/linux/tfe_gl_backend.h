@@ -13,6 +13,7 @@ extern TFE_GL_Backend tfe_gl_backend;
 TFE_GL_Backend tfe_PreferGLBackend();
 void tfe_SetGLBackend(TFE_GL_Backend backend);
 int tfe_UseGLES();
+// Handheld UI/input/port behavior: true only when TFE_HANDHELD is set (not by CPU arch).
 int tfe_UseHandheld();
 void tfe_InitGLBackendFromContext();
 const char* tfe_GetGLSLVersionString();

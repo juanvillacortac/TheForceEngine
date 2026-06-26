@@ -10,6 +10,7 @@
 #include <TFE_Game/reticle.h>
 #include <TFE_Game/saveSystem.h>
 #include <TFE_RenderBackend/renderBackend.h>
+#include <TFE_RenderBackend/Win32OpenGL/openGL_Caps.h>
 #include <TFE_System/system.h>
 #include <TFE_System/parser.h>
 #include <TFE_System/frameLimiter.h>
@@ -422,11 +423,16 @@ namespace TFE_FrontEndUI
 		DisplayInfo displayInfo;
 		TFE_RenderBackend::getDisplayInfo(&displayInfo);
 
-		if (!graphics->widescreen)
+		graphics->widescreen = true;
+		graphics->gameResolution.x = (s32)displayInfo.width;
+		graphics->gameResolution.z = (s32)displayInfo.height;
+
+		graphics->rendererIndex = RENDERER_HARDWARE;
+		if (!OpenGL_Caps::deviceSupportsGpuRenderer())
 		{
-			graphics->widescreen = true;
-			graphics->gameResolution.x = displayInfo.width;
-			graphics->gameResolution.z = displayInfo.height;
+			TFE_System::logWrite(LOG_WARNING, "Handheld",
+				"GPU renderer not supported on this device (fragment texture buffers). Using software renderer.");
+			graphics->rendererIndex = RENDERER_SOFTWARE;
 		}
 
 		// Bloom is expensive on Mali-G31; leave off unless the user enables it in settings.
@@ -437,8 +443,20 @@ namespace TFE_FrontEndUI
 		graphics->asyncFramebuffer = false;
 
 		TFE_System::logWrite(LOG_MSG, "Handheld",
-			"Applied handheld defaults (widescreen, bloom off, true-color filters off). Renderer left at %s (change in Settings if needed).",
-			graphics->rendererIndex == RENDERER_HARDWARE ? "GPU/OpenGL" : "software");
+			"Applied handheld defaults (%s renderer, widescreen %dx%d, bloom off).",
+			graphics->rendererIndex == RENDERER_HARDWARE ? "GPU/OpenGL" : "software",
+			graphics->gameResolution.x, graphics->gameResolution.z);
+
+		TFE_Settings::writeToDisk();
+	}
+
+	bool needsHandheldPortDefaults()
+	{
+		const TFE_Settings_Graphics* graphics = TFE_Settings::getGraphicsSettings();
+		return !graphics->widescreen
+			&& graphics->gameResolution.x == 320
+			&& graphics->gameResolution.z == 200
+			&& graphics->rendererIndex == RENDERER_SOFTWARE;
 	}
 
 	void skipLauncherOnHandheld()
@@ -968,14 +986,9 @@ namespace TFE_FrontEndUI
 			}
 			if (s_menuRetState != APP_STATE_MENU && ImGui::Button("Exit to Menu", sideBarButtonSize))
 			{
-				s_menuRetState = APP_STATE_MENU;
-
-				s_subUI = FEUI_NONE;
-				s_drawNoGameDataMsg = false;
-				s_appState = APP_STATE_EXIT_TO_MENU;
 				TFE_Settings::writeToDisk();
 				inputMapping_serialize();
-				s_selectedModCmd[0] = 0;
+				exitToMenu();
 			}
 			ImGui::PopFont();
 
@@ -1689,7 +1702,8 @@ namespace TFE_FrontEndUI
 
 	static char s_newSaveName[256];
 	static char s_fileName[TFE_MAX_PATH];
-	static char s_saveGameConfirmMsg[TFE_MAX_PATH];
+	static char s_saveGameConfirmTitle[TFE_MAX_PATH];
+	static const char* s_saveConfirmPopupId = "SaveConfirm";
 	static bool s_popupOpen = false;
 	static bool s_popupSetFocus = false;
 
@@ -1707,8 +1721,8 @@ namespace TFE_FrontEndUI
 
 	void openLoadConfirmPopup()
 	{
-		sprintf(s_saveGameConfirmMsg, "Load '%s'?###SaveConfirm", s_newSaveName);
-		ImGui::OpenPopup(s_saveGameConfirmMsg);
+		snprintf(s_saveGameConfirmTitle, TFE_MAX_PATH, "Load '%s'?", s_newSaveName);
+		ImGui::OpenPopup(s_saveConfirmPopupId);
 		s_popupOpen = true;
 		s_popupSetFocus = true;
 	}
@@ -1717,14 +1731,18 @@ namespace TFE_FrontEndUI
 	{
 		if (prevName[0] == 0)
 		{
-			sprintf(s_saveGameConfirmMsg, "Create New Save?###SaveConfirm");
+			strcpy(s_saveGameConfirmTitle, "Create New Save?");
+			if (s_newSaveName[0] == 0)
+			{
+				snprintf(s_newSaveName, sizeof(s_newSaveName), "Save %zu", s_saveDir.size() + 1);
+			}
 		}
 		else
 		{
-			sprintf(s_saveGameConfirmMsg, "Overwrite Save '%s'?###SaveConfirm", prevName);
+			snprintf(s_saveGameConfirmTitle, TFE_MAX_PATH, "Overwrite Save '%s'?", prevName);
 		}
 
-		ImGui::OpenPopup(s_saveGameConfirmMsg);
+		ImGui::OpenPopup(s_saveConfirmPopupId);
 		s_popupOpen = true;
 		s_popupSetFocus = true;
 	}
@@ -1842,10 +1860,26 @@ namespace TFE_FrontEndUI
 		}
 	}
 
+	static bool saveLoadHandheldActivate()
+	{
+		return TFE_Ui::isHandheld() && ImGui::IsItemFocused() && buttonPressed(CONTROLLER_BUTTON_A);
+	}
+
 	static void saveLoadDrawConfirmPopup(bool save, f32 inputWidth, bool compact)
 	{
-		if (!ImGui::BeginPopupModal(s_saveGameConfirmMsg, NULL, ImGuiWindowFlags_AlwaysAutoResize))
+		if (!s_popupOpen)
 		{
+			return;
+		}
+
+		if (!ImGui::BeginPopupModal(s_saveConfirmPopupId, NULL, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			// Popup failed to open (wrong stack / clipped child) — don't lock the UI forever.
+			if (!ImGui::IsPopupOpen(s_saveConfirmPopupId, ImGuiPopupFlags_AnyPopupId))
+			{
+				s_popupOpen = false;
+				s_popupSetFocus = false;
+			}
 			return;
 		}
 
@@ -1855,6 +1889,9 @@ namespace TFE_FrontEndUI
 			ImGui::SetKeyboardFocusHere();
 			s_popupSetFocus = false;
 		}
+
+		ImGui::TextUnformatted(s_saveGameConfirmTitle);
+		ImGui::Separator();
 
 		const f32 fieldWidth = max(160.0f, inputWidth);
 		ImGui::SetNextItemWidth(fieldWidth);
@@ -1870,7 +1907,12 @@ namespace TFE_FrontEndUI
 		}
 
 		const ImVec2 buttonSize(compact ? ImVec2(fieldWidth * 0.48f, 36.0f * s_uiScale) : ImVec2(120.0f * s_uiScale, 0.0f));
-		if (ImGui::Button("OK", buttonSize))
+		bool okPressed = ImGui::Button("OK", buttonSize);
+		if (!okPressed && saveLoadHandheldActivate())
+		{
+			okPressed = true;
+		}
+		if (okPressed)
 		{
 			shouldExit = true;
 			saveLoadConfirmed(save);
@@ -1883,7 +1925,12 @@ namespace TFE_FrontEndUI
 		{
 			ImGui::SameLine();
 		}
-		if (ImGui::Button("Cancel", buttonSize))
+		bool cancelPressed = ImGui::Button("Cancel", buttonSize);
+		if (!cancelPressed && saveLoadHandheldActivate())
+		{
+			cancelPressed = true;
+		}
+		if (cancelPressed)
 		{
 			shouldExit = false;
 			closeSaveNameEditPopup();
@@ -1958,10 +2005,14 @@ namespace TFE_FrontEndUI
 			{
 				s_selectedSave = s32(i);
 			}
+			if (compactLayout && !s_popupOpen && ImGui::IsItemActivated())
+			{
+				s_selectedSave = s32(i);
+				saveLoadActivateSelection(save, listOffset);
+			}
 		}
 
 		saveLoadSyncPreview(listOffset, prevSelected);
-		saveLoadDrawConfirmPopup(save, popupInputWidth, compactLayout);
 		ImGui::PopFont();
 		ImGui::PopStyleColor();
 		ImGui::EndChild();
@@ -2067,11 +2118,17 @@ namespace TFE_FrontEndUI
 			const char* actionLabel = save
 				? (s_selectedSave == 0 ? "Create New Save" : "Save Selected")
 				: "Load Selected";
-			if (ImGui::Button(actionLabel, actionSize))
+			bool actionPressed = ImGui::Button(actionLabel, actionSize);
+			if (!actionPressed && saveLoadHandheldActivate())
+			{
+				actionPressed = true;
+			}
+			if (actionPressed)
 			{
 				saveLoadActivateSelection(save, listOffset);
 			}
 			ImGui::TextDisabled("Tip: use the sidebar Return button to go back.");
+			saveLoadDrawConfirmPopup(save, popupInputWidth, true);
 			return;
 		}
 
@@ -2092,6 +2149,7 @@ namespace TFE_FrontEndUI
 		f32 rheight = displayInfo.height - 80.0f;
 		ImGui::SetNextWindowPos(ImVec2(rightColumn, 64.0f*s_uiScale));
 		saveLoadDrawFileList(save, listOffset, rwidth, rheight, floorf(20 * s_uiScale + 0.5f), false, 768.0f * s_uiScale);
+		saveLoadDrawConfirmPopup(save, 768.0f * s_uiScale, false);
 	}
 
 	void configSave()

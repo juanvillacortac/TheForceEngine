@@ -19,6 +19,7 @@
 #include <TFE_RenderBackend/indexBuffer.h>
 #include <TFE_RenderBackend/shader.h>
 #include <TFE_RenderBackend/shaderBuffer.h>
+#include <TFE_RenderShared/texturePacker.h>
 
 #include <TFE_Settings/settings.h>
 
@@ -829,7 +830,8 @@ namespace TFE_Jedi
 			shader->setVariable(s_shaderInputs[s].cameraRightId, SVT_VEC3,   s_cameraRight.m);
 			if (s_shaderInputs[s].texSamplingParamId > 0)
 			{
-				const f32 texSamplingParam[] = { settings->useBilinear ? settings->bilinearSharpness : 0.0f, 0.0f, 0.0f, 0.0f };
+				const f32 atlasRcp = 1.0f / f32(texturepacker_getPageWidth());
+				const f32 texSamplingParam[] = { settings->useBilinear ? settings->bilinearSharpness : 0.0f, atlasRcp, 0.0f, 0.0f };
 				shader->setVariable(s_shaderInputs[s].texSamplingParamId, SVT_VEC4, texSamplingParam);
 			}
 			if (s_shaderInputs[s].palFxLumMask >= 0 && s_shaderInputs[s].palFxFlash >= 0)

@@ -75,6 +75,7 @@ namespace TFE_DarkForces
 	JBool s_lumMaskChanged = JFALSE;
 
 	JBool s_loadingFromSave = JFALSE;
+	JBool s_saveLoadDeserializeComplete = JFALSE;
 
 	s32 s_flashFxLevel = 0;
 	s32 s_healthFxLevel = 0;
@@ -97,6 +98,11 @@ namespace TFE_DarkForces
 	static Task* s_levelEndTask = nullptr;
 	static Task* s_mainTask = nullptr;
 	static Task* s_missionLoadTask = nullptr;
+	static JBool s_loadingPresentationActive = JFALSE;
+	static JBool s_gpuPresentSuppressed = JFALSE;
+	static JBool s_gpuWarmupFrame = JFALSE;
+	static JBool s_syncLevelPalette = JFALSE;
+	static s32 s_levelPaletteRevealFrames = 0;
 
 	static s32 s_visionFxCountdown = 0;
 	static s32 s_visionFxEndCountdown = 0;
@@ -233,16 +239,6 @@ namespace TFE_DarkForces
 		vfb_setResolution(adjustedWidth, graphics->gameResolution.z);
 		s_framebuffer = vfb_getCpuBuffer();
 
-		if (graphics->gameResolution.x != 320 || graphics->gameResolution.z != 200 || graphics->widescreen)
-		{
-			TFE_Jedi::setSubRenderer(TSR_HIGH_RESOLUTION);
-		}
-		else
-		{
-			TFE_Jedi::setSubRenderer(TSR_CLASSIC_FIXED);
-		}
-		automap_resetScale();
-
 		// Copy the level palette...
 		// Update the palette.
 		u32 levelPalette[256];
@@ -256,23 +252,140 @@ namespace TFE_DarkForces
 		TFE_Jedi::renderer_setSourcePalette(levelPalette);
 		texturepacker_setConversionPalette(1, 6, s_levelPalette);
 
-		// TFE
-		if (TFE_Settings::getGraphicsSettings()->colorMode == COLORMODE_TRUE_COLOR)
+		// Level palettes are baked into the GPU texture atlas (walls/floors), so force a repack
+		// whenever a level display is created. Sky sampling uses the live palette instead.
+		if (graphics->rendererIndex == RENDERER_HARDWARE)
+		{
+			TFE_Jedi::render_clearCachedTextures();
+		}
+		else if (graphics->colorMode == COLORMODE_TRUE_COLOR)
 		{
 			TFE_Jedi::render_clearCachedTextures();
 		}
 
 		TFE_Jedi::renderer_setType(RendererType(graphics->rendererIndex));
-		TFE_Jedi::render_setResolution();
+		if (graphics->gameResolution.x != 320 || graphics->gameResolution.z != 200 || graphics->widescreen)
+		{
+			TFE_Jedi::setSubRenderer(TSR_HIGH_RESOLUTION);
+		}
+		else
+		{
+			TFE_Jedi::setSubRenderer(TSR_CLASSIC_FIXED);
+		}
+		automap_resetScale();
+		TFE_Jedi::render_setResolution(true);
 		TFE_Jedi::renderer_setLimits();
-
-		// Clear the palette for now.
-		blankScreen();
 	}
 
 	void mission_setLoadingFromSave()
 	{
 		s_loadingFromSave = JTRUE;
+		s_saveLoadDeserializeComplete = JFALSE;
+	}
+
+	static void mission_endLoadingPresentation()
+	{
+		s_loadingPresentationActive = JFALSE;
+	}
+
+	static void mission_applyLevelPalette()
+	{
+		setPalette(s_basePalette);
+		setPalette(s_basePalette);
+		s_palModified = JFALSE;
+	}
+
+	static void mission_suppressGpuPresent()
+	{
+		if (TFE_Settings::getGraphicsSettings()->rendererIndex != RENDERER_HARDWARE) { return; }
+
+		vfb_setMode(VFB_TEXTURE);
+		TFE_Jedi::render_setResolution(true);
+		s_framebuffer = vfb_getCpuBuffer();
+		blitLoadingScreen();
+		setPalette(s_loadingScreenPal);
+		vfb_swap();
+		vfb_swap();
+		s_gpuPresentSuppressed = JTRUE;
+		s_levelPaletteRevealFrames = 3;
+	}
+
+	static void mission_restoreGpuPresent()
+	{
+		if (!s_gpuPresentSuppressed) { return; }
+		if (TFE_Settings::getGraphicsSettings()->rendererIndex != RENDERER_HARDWARE) { return; }
+
+		mission_applyLevelPalette();
+		vfb_setMode(VFB_RENDER_TRAGET);
+		TFE_Jedi::render_setResolution(true);
+		s_gpuPresentSuppressed = JFALSE;
+		mission_applyLevelPalette();
+	}
+
+	static void mission_beginGameplayPresentation()
+	{
+		mission_endLoadingPresentation();
+		if (TFE_Settings::getGraphicsSettings()->rendererIndex == RENDERER_HARDWARE)
+		{
+			// Draw the first gameplay frame off-screen, then reveal on the next frame.
+			s_gpuWarmupFrame = JTRUE;
+			s_syncLevelPalette = JTRUE;
+			displayLoadingScreen();
+		}
+		else
+		{
+			s_gpuWarmupFrame = JFALSE;
+			s_syncLevelPalette = JFALSE;
+		}
+	}
+
+	static void mission_finishSaveLoad()
+	{
+		mission_createRenderDisplay();
+		TFE_Jedi::renderer_prepareLevel();
+		mission_beginGameplayPresentation();
+		s_missionMode = MISSION_MODE_MAIN;
+		mission_applyLevelPalette();
+		reticle_enable(true);
+	}
+
+	void mission_notifySaveLoadComplete()
+	{
+		s_saveLoadDeserializeComplete = JTRUE;
+		if (s_missionMode == MISSION_MODE_LOAD_START)
+		{
+			mission_finishSaveLoad();
+		}
+	}
+
+	static void mission_presentLoadingScreen()
+	{
+		if (!s_loadingPresentationActive)
+		{
+			mission_createDisplay();
+			s_loadingPresentationActive = JTRUE;
+		}
+
+		TFE_Settings_Graphics* graphics = TFE_Settings::getGraphicsSettings();
+		const bool configuredGpu = graphics->rendererIndex == RENDERER_HARDWARE;
+		if (configuredGpu)
+		{
+			// Present the CPU loading art without switching the renderer to software.
+			vfb_setMode(VFB_TEXTURE);
+			TFE_Jedi::render_setResolution(true);
+		}
+
+		s_framebuffer = vfb_getCpuBuffer();
+		blitLoadingScreen();
+		setPalette(s_loadingScreenPal);
+		vfb_swap();
+		vfb_swap();
+
+		if (configuredGpu && TFE_Jedi::renderer_getType() == RENDERER_HARDWARE)
+		{
+			vfb_setMode(VFB_RENDER_TRAGET);
+			TFE_Jedi::render_setResolution(true);
+		}
 	}
 
 	char s_colormapName[TFE_MAX_PATH] = { 0 };
@@ -437,9 +550,12 @@ namespace TFE_DarkForces
 						mission_loadColormap();
 						automap_updateMapData(MAP_CENTER_PLAYER);
 						setSkyParallax(s_levelState.parallax0, s_levelState.parallax1);
-						s_missionMode = MISSION_MODE_MAIN;
-						s_gamePaused = JFALSE;
 						mission_createRenderDisplay();
+						TFE_Jedi::renderer_prepareLevel();
+						mission_beginGameplayPresentation();
+						s_missionMode = MISSION_MODE_MAIN;
+						mission_applyLevelPalette();
+						s_gamePaused = JFALSE;
 						hud_startup(JFALSE);
 
 						reticle_enable(true);
@@ -452,10 +568,16 @@ namespace TFE_DarkForces
 			}
 			else // Loading from save.
 			{
-				s_missionMode = MISSION_MODE_MAIN;
-				mission_createRenderDisplay();
+				time_pause(JFALSE);
+				mission_createDisplay();
+				displayLoadingScreen();
+				s_missionMode = MISSION_MODE_LOAD_START;
 				hud_startup(JTRUE);
-				reticle_enable(true);
+
+				if (s_saveLoadDeserializeComplete)
+				{
+					mission_finishSaveLoad();
+				}
 			}
 			s_loadingFromSave = JFALSE;
 			TFE_Input::clearAccumulatedMouseMove();
@@ -563,7 +685,6 @@ namespace TFE_DarkForces
 	void mission_mainTaskFunc(MessageType msg)
 	{
 		task_begin;
-		blankScreen();
 
 		while (msg != MSG_FREE_TASK)
 		{
@@ -571,6 +692,34 @@ namespace TFE_DarkForces
 			if (s_curTick >= 0 && (s_exitLevel || msg < MSG_RUN_TASK))
 			{
 				break;
+			}
+
+			// Keep the loading screen visible while level data is still being loaded.
+			if (s_missionMode == MISSION_MODE_LOAD_START)
+			{
+				mission_presentLoadingScreen();
+
+				do
+				{
+					task_yield(TASK_NO_DELAY);
+					if (msg != MSG_FREE_TASK && msg != MSG_RUN_TASK)
+					{
+						mainTask_handleCall(msg);
+					}
+				} while (msg != MSG_FREE_TASK && msg != MSG_RUN_TASK);
+				continue;
+			}
+
+			mission_restoreGpuPresent();
+
+			if (s_syncLevelPalette)
+			{
+				mission_applyLevelPalette();
+				s_syncLevelPalette = JFALSE;
+			}
+			if (s_levelPaletteRevealFrames > 0)
+			{
+				mission_applyLevelPalette();
 			}
 
 			// Grab the current framebuffer in case in changed.
@@ -688,8 +837,18 @@ namespace TFE_DarkForces
 			}
 
 			// vgaSwapBuffers() in the DOS code.
+			if (s_levelPaletteRevealFrames > 0)
+			{
+				mission_applyLevelPalette();
+				s_levelPaletteRevealFrames--;
+			}
 			TFE_Jedi::endRender();
 			vfb_swap();
+			if (s_gpuWarmupFrame)
+			{
+				mission_suppressGpuPresent();
+				s_gpuWarmupFrame = JFALSE;
+			}
 
 			// Pump tasks and look for any with a different ID.
 			do

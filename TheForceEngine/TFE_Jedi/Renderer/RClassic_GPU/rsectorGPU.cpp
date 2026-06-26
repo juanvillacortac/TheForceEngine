@@ -106,6 +106,8 @@ namespace TFE_Jedi
 
 	TextureGpu* s_trueColorMapping = nullptr;
 	static TextureGpu*  s_colormapTex = nullptr;
+	static const u8* s_uploadedColorMap = nullptr;
+	static const u8* s_uploadedLightSourceRamp = nullptr;
 	static ShaderBuffer s_sectorGpuBuffer;
 	static ShaderBuffer s_wallGpuBuffer;
 	static Shader s_spriteShader;
@@ -253,6 +255,8 @@ namespace TFE_Jedi
 		s_portalList = nullptr;
 		s_cachedSectors = nullptr;
 		s_colormapTex = nullptr;
+		s_uploadedColorMap = nullptr;
+		s_uploadedLightSourceRamp = nullptr;
 		s_trueColorMapping = nullptr;
 
 		sdisplayList_destroy();
@@ -267,6 +271,10 @@ namespace TFE_Jedi
 	{
 		m_levelInit = false;
 		s_flushCache = JFALSE;
+		s_uploadedColorMap = nullptr;
+		s_uploadedLightSourceRamp = nullptr;
+		TFE_RenderBackend::freeTexture(s_colormapTex);
+		s_colormapTex = nullptr;
 	}
 
 	void TFE_Sectors_GPU::flushCache()
@@ -782,6 +790,8 @@ namespace TFE_Jedi
 
 			TFE_RenderBackend::freeTexture(s_colormapTex);
 			s_colormapTex = TFE_RenderBackend::createTexture(256, 32, colormapData);
+			s_uploadedColorMap = s_colorMap;
+			s_uploadedLightSourceRamp = s_lightSourceRamp;
 		}
 
 		// Build a color ramp for true-color...
@@ -1078,6 +1088,7 @@ namespace TFE_Jedi
 			model_loadGpuModels();
 			// Update the color map based on interpolation or true color settings.
 			updateColorMap();
+			TFE_System::logWrite(LOG_MSG, "GPU Renderer", "Level GPU init complete.");
 		}
  		else
 		{
@@ -2033,7 +2044,8 @@ namespace TFE_Jedi
 		}
 		if (s_shaderInputs[pass].texSamplingParamId >= 0)
 		{
-			const f32 texSamplingParam[] = { settings->useBilinear ? settings->bilinearSharpness : 0.0f, 0.0f, 0.0f, 0.0f };
+			const f32 atlasRcp = 1.0f / f32(texturepacker_getPageWidth());
+			const f32 texSamplingParam[] = { settings->useBilinear ? settings->bilinearSharpness : 0.0f, atlasRcp, 0.0f, 0.0f };
 			shader->setVariable(s_shaderInputs[pass].texSamplingParamId, SVT_VEC4, texSamplingParam);
 		}
 		if (s_shaderInputs[pass].palFxLumMask >= 0 && s_shaderInputs[pass].palFxFlash >= 0)
@@ -2120,7 +2132,8 @@ namespace TFE_Jedi
 		}
 		if (s_shaderInputs[SPRITE_PASS].texSamplingParamId >= 0)
 		{
-			const f32 texSamplingParam[] = { settings->useBilinear ? settings->bilinearSharpness : 0.0f, 0.0f, 0.0f, 0.0f };
+			const f32 atlasRcp = 1.0f / f32(texturepacker_getPageWidth());
+			const f32 texSamplingParam[] = { settings->useBilinear ? settings->bilinearSharpness : 0.0f, atlasRcp, 0.0f, 0.0f };
 			s_spriteShader.setVariable(s_shaderInputs[SPRITE_PASS].texSamplingParamId, SVT_VEC4, texSamplingParam);
 		}
 		if (s_shaderInputs[SPRITE_PASS].palFxLumMask >= 0 && s_shaderInputs[SPRITE_PASS].palFxFlash >= 0)
@@ -2206,9 +2219,12 @@ namespace TFE_Jedi
 		{
 			return;
 		}
-		if (!s_colormapTex || (s_shaderSettings.trueColor && !s_trueColorMapping))
+		const bool colormapChanged = s_colorMap != s_uploadedColorMap || s_lightSourceRamp != s_uploadedLightSourceRamp;
+		if (!s_colormapTex || colormapChanged || (s_shaderSettings.trueColor && !s_trueColorMapping))
 		{
 			updateColorMap();
+			s_uploadedColorMap = s_colorMap;
+			s_uploadedLightSourceRamp = s_lightSourceRamp;
 		}
 	}
 
