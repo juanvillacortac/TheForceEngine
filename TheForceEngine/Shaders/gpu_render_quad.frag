@@ -39,7 +39,7 @@ flat in vec4 Frag_TextureId_Color;
 
 	vec3 generateColor(vec3 baseColor, float lightLevel)
 	{
-		int l0 = min(31, int(lightLevel));
+		int l0 = min(31, TFE_FTOI(lightLevel));
 		int l1 = min(31, l0 + 1);
 		float blendFactor = fract(lightLevel);
 
@@ -71,7 +71,7 @@ flat in vec4 Frag_TextureId_Color;
 		ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
 		ivec3 iuv;
 		uv = scaleUv(uv, sampleData.y);
-		iuv.xy = ivec2(uv);
+		iuv.xy = TFE_FTOI2(uv);
 		iuv.z = 0;
 
 		if ( any(lessThan(iuv.xy, ivec2(0))) || any(greaterThan(iuv.xy, sampleData.zw-1)) )
@@ -91,7 +91,7 @@ flat in vec4 Frag_TextureId_Color;
 		if (light < 31)
 		{
 			ivec2 uv = ivec2(color, light);
-			color = int(texelFetch(Colormap, uv, 0).r * 255.0);
+			color = TFE_FTOI(texelFetch(Colormap, uv, 0).r * 255.0);
 		}
 		return texelFetch(Palette, ivec2(color, 0), 0).rgb;
 	}
@@ -100,7 +100,7 @@ flat in vec4 Frag_TextureId_Color;
 	{
 		ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
 		ivec3 iuv;
-		iuv.xy = ivec2(uv);
+		iuv.xy = TFE_FTOI2(uv);
 		iuv.z = 0;
 
 		if ( any(lessThan(iuv.xy, ivec2(0))) || any(greaterThan(iuv.xy, sampleData.zw-1)) )
@@ -118,9 +118,9 @@ flat in vec4 Frag_TextureId_Color;
 void main()
 {
 	// Unpack the texture and color information.
-	int textureId  = int(floor(Frag_TextureId_Color.x * 255.0 + 0.5) + floor(Frag_TextureId_Color.y * 255.0 + 0.5)*256.0 + 0.5);
-	int color      = int(Frag_TextureId_Color.z * 255.0 + 0.5);
-	int lightLevel = int(Frag_TextureId_Color.w * 255.0 + 0.5);
+	int textureId  = TFE_FTOI(floor(Frag_TextureId_Color.x * 255.0 + 0.5) + floor(Frag_TextureId_Color.y * 255.0 + 0.5)*256.0 + 0.5);
+	int color      = TFE_FTOI(Frag_TextureId_Color.z * 255.0 + 0.5);
+	int lightLevel = TFE_FTOI(Frag_TextureId_Color.w * 255.0 + 0.5);
 
 	bool indexed = false;
 	if (lightLevel > 31)
@@ -138,7 +138,7 @@ void main()
 		baseColor = sampleTextureClamp(textureId, Frag_Uv);
 		if (indexed)
 		{
-			int alpha = int(baseColor.a * 255.0 + 0.5);
+			int alpha = TFE_FTOI(baseColor.a * 255.0 + 0.5);
 			// store 8 indices in alpha channel.
 			if (alpha >= 128 && alpha < 255)
 			{
@@ -161,7 +161,7 @@ void main()
 	int baseColor = color;
 	if (textureId < 65535)
 	{
-		baseColor = int(sampleTextureClamp(textureId, Frag_Uv));
+		baseColor = TFE_FTOI(sampleTextureClamp(textureId, Frag_Uv));
 		if (baseColor < 1)
 		{
 			discard;

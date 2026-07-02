@@ -131,6 +131,22 @@ void tfe_SetActiveGLContext(SDL_Window* window, SDL_GLContext context)
 	s_activeGlContext = context;
 }
 
+void tfe_DestroyActiveGLContext()
+{
+	if (!s_activeGlContext)
+		return;
+
+	if (s_activeGlWindow)
+		SDL_GL_MakeCurrent(s_activeGlWindow, nullptr);
+
+	// Let the Wayland compositor process the surface unbind before the context dies.
+	SDL_PumpEvents();
+
+	SDL_GL_DeleteContext(s_activeGlContext);
+	s_activeGlWindow = nullptr;
+	s_activeGlContext = nullptr;
+}
+
 bool tfe_EnsureGLContextCurrent()
 {
 	if (!s_activeGlWindow || !s_activeGlContext)

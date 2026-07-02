@@ -29,6 +29,55 @@ namespace TFE_Jedi
 
 	static FramebufferMode s_mode = VFB_TEXTURE;
 	static FramebufferMode s_nextMode = VFB_TEXTURE;
+	static bool s_stretchGameplayPresent = false;
+	static bool s_classicUiLetterboxedPresent = false;
+
+	static bool vfb_shouldStretchSquareGameplay()
+	{
+		if (!tfe_UseHandheld())
+		{
+			return false;
+		}
+
+		const TFE_Settings_Graphics* graphics = TFE_Settings::getGraphicsSettings();
+		if (!graphics->widescreen)
+		{
+			return false;
+		}
+
+		s32 panelW = 0;
+		s32 panelH = 0;
+		TFE_RenderBackend::getReferenceDisplaySize(&panelW, &panelH);
+		return TFE_RenderBackend::isSquareDisplayAspect(panelW, panelH);
+	}
+
+	static void vfb_applyPresentMode()
+	{
+		DisplayMode mode = DMODE_ASPECT_CORRECT;
+
+		// Square handheld: gameplay fills the panel (STRETCH). Classic UI (PDA, menus,
+		// cutscenes) draws 4:3 letterbox bars into the square framebuffer — present 1:1
+		// so the GPU blit does not squash the full texture into a second letterbox rect.
+		if (vfb_shouldStretchSquareGameplay())
+		{
+			if (s_stretchGameplayPresent || s_classicUiLetterboxedPresent)
+			{
+				mode = DMODE_STRETCH;
+			}
+		}
+
+		TFE_RenderBackend::setVirtualDisplayOutputMode(mode);
+	}
+
+	static void vfb_applySquareHandheldGameplayPresent()
+	{
+		if (vfb_shouldStretchSquareGameplay() && (s_width > 320 || s_height > 200))
+		{
+			s_stretchGameplayPresent = true;
+			s_classicUiLetterboxedPresent = false;
+			vfb_applyPresentMode();
+		}
+	}
 
 	void vfb_createVirtualDisplay(u32 width, u32 height);
 		
@@ -118,6 +167,7 @@ namespace TFE_Jedi
 		};
 
 		// Avoid flashing the previous buffer when swapping.
+		vfb_applySquareHandheldGameplayPresent();
 		vfb_swap();
 		vfb_swap();
 
@@ -160,6 +210,10 @@ namespace TFE_Jedi
 
 	void vfb_forceToBlack()
 	{
+		s_stretchGameplayPresent = false;
+		s_classicUiLetterboxedPresent = false;
+		vfb_applySquareHandheldGameplayPresent();
+
 		if (s_mode == VFB_TEXTURE)
 		{
 			memset(vfb_getCpuBuffer(), 0, s_width * s_height);
@@ -194,6 +248,7 @@ namespace TFE_Jedi
 	// Frame rendering is done, copy the results to GPU memory.
 	void vfb_swap()
 	{
+		vfb_applyPresentMode();
 		TFE_RenderBackend::updateVirtualDisplay(s_curFrameBuffer, s_width * s_height);
 	}
 
@@ -263,9 +318,11 @@ namespace TFE_Jedi
 		}
 
 		// TFE Specific: always use 320x200 when rendering in-game UI (for now).
+		const DisplayMode mode = DMODE_ASPECT_CORRECT;
+
 		VirtualDisplayInfo vdisp =
 		{
-			DMODE_ASPECT_CORRECT,	// Output display mode.
+			mode,					// Output display mode.
 			vdispFlags,				// See VirtualDisplayFlags.
 
 			width,	// full width
@@ -274,5 +331,64 @@ namespace TFE_Jedi
 			height,	// width for 3D drawing.
 		};
 		TFE_RenderBackend::createVirtualDisplay(vdisp);
+		vfb_applyPresentMode();
+	}
+
+	void vfb_setStretchGameplayPresent(bool stretch)
+	{
+		s_stretchGameplayPresent = stretch;
+		if (stretch)
+		{
+			s_classicUiLetterboxedPresent = false;
+		}
+		vfb_applyPresentMode();
+	}
+
+	void vfb_setClassicUiLetterboxedPresent(bool letterboxed)
+	{
+		s_classicUiLetterboxedPresent = letterboxed;
+		if (letterboxed)
+		{
+			s_stretchGameplayPresent = false;
+		}
+		vfb_applyPresentMode();
+	}
+
+	bool vfb_useSquareHandheldPanel()
+	{
+		return vfb_shouldStretchSquareGameplay();
+	}
+
+	bool vfb_shouldLetterboxClassicUi()
+	{
+		if (!tfe_UseHandheld())
+		{
+			return false;
+		}
+
+		const TFE_Settings_Graphics* graphics = TFE_Settings::getGraphicsSettings();
+		if (!graphics->widescreen)
+		{
+			return false;
+		}
+
+		u32 width = 0;
+		u32 height = 0;
+		vfb_getResolution(&width, &height);
+		return TFE_RenderBackend::isSquareDisplayAspect((s32)width, (s32)height);
+	}
+
+	void vfb_getClassicUiDrawSize(s32 bufferWidth, s32 bufferHeight, s32* drawWidth, s32* drawHeight)
+	{
+		*drawWidth = bufferWidth;
+		*drawHeight = bufferHeight;
+
+		if (!vfb_shouldLetterboxClassicUi())
+		{
+			return;
+		}
+
+		const s32 height4x3 = bufferWidth * 3 / 4;
+		*drawHeight = min(height4x3, bufferHeight);
 	}
 }  // namespace TFE_Jedi

@@ -19,3 +19,4 @@ int tfe_UseBufferTexture2D();
 const char* tfe_GetShaderBuffer2DDefines();
 int tfe_GLESQueryMaxTextureBufferSize();
 int tfe_GLESUseClipDiscardFallback();
+int tfe_GLESBifrostSectorShadersOK();

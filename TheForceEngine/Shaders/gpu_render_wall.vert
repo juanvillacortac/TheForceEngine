@@ -64,7 +64,7 @@ void main()
 	float ceilHeight  = sectorData.y;
 	float sectorAmbient = sectorData.z;
 	// Offset should not be required, but added just in case.
-	int wallStart = int(sectorData.w + 0.5);
+	int wallStart = TFE_FTOI(sectorData.w + 0.5);
 	wallId += wallStart;
 	
 	// Generate the output position and uv for the vertex.

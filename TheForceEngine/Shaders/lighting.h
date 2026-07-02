@@ -1,6 +1,11 @@
 #ifndef TFE_LIGHTING_INCLUDED
 #define TFE_LIGHTING_INCLUDED
 
+#ifndef TFE_FTOI
+#define TFE_FTOI(x) int(x)
+#define TFE_FTOI2(v) ivec2(v)
+#endif
+
 float tfe_readLightRampG(int depthIndex)
 {
 #ifdef TFE_GLES_SMOOTH_LIGHTRAMP
@@ -32,8 +37,8 @@ float getLightRampValue(float z, float worldAmbient)
 	float d0 = base;
 	float d1 = min(127.0, base + 1.0);
 	float blendFactor = fract(depthScaled);
-	float ramp0 = tfe_readLightRampG(int(d0));
-	float ramp1 = tfe_readLightRampG(int(d1));
+	float ramp0 = tfe_readLightRampG(TFE_FTOI(d0));
+	float ramp1 = tfe_readLightRampG(TFE_FTOI(d1));
 	float lightSource = 31.0 - (mix(ramp0, ramp1, blendFactor) + worldAmbient);
 #else // Vanilla style light ramp.
 	float depthScaledF = min(z * 4.0, 127.0);
@@ -41,11 +46,11 @@ float getLightRampValue(float z, float worldAmbient)
 #ifdef TFE_GLES_SMOOTH_LIGHTRAMP
 	float d1 = min(127.0, depthScaled + 1.0);
 	float blendFactor = fract(depthScaledF);
-	float ramp0 = tfe_readLightRampG(int(depthScaled));
-	float ramp1 = tfe_readLightRampG(int(d1));
+	float ramp0 = tfe_readLightRampG(TFE_FTOI(depthScaled));
+	float ramp1 = tfe_readLightRampG(TFE_FTOI(d1));
 	float lightSource = 31.0 - (mix(ramp0, ramp1, blendFactor) + worldAmbient);
 #else
-	float ramp = tfe_readLightRampG(int(depthScaled));
+	float ramp = tfe_readLightRampG(TFE_FTOI(depthScaled));
 	float lightSource = 31.0 - (ramp + worldAmbient);
 #endif
 #endif

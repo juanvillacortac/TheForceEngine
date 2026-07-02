@@ -6,6 +6,7 @@
 #include "lsystem.h"
 #include "lfade.h"
 #include "cutscene_film.h"
+#include <TFE_DarkForces/GameUI/menu.h>
 #include <TFE_Game/igame.h>
 #include <TFE_Jedi/Renderer/virtualFramebuffer.h>
 #include <TFE_Jedi/Math/core_math.h>
@@ -125,12 +126,9 @@ namespace TFE_DarkForces
 		s_updateView = lcanvas_applyFade(JFALSE);
 		if (s_updateView)
 		{
-			LRect bounds;
-			lcanvas_getBounds(&bounds);
-			const s32 width  = bounds.right - bounds.left;
-			const s32 height = bounds.bottom - bounds.top;
-			memcpy(vfb_getCpuBuffer(), ldraw_getBitmap(), width * height);
+			menu_blitToScreen(ldraw_getBitmap(), JFALSE, JFALSE);
 		}
+		vfb_setStretchGameplayPresent(false);
 		vfb_swap();
 	}
 

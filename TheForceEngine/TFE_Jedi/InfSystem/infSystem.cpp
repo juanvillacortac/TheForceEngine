@@ -71,6 +71,7 @@ namespace TFE_Jedi
 
 	// DOS hack... this is required since elevators with an invalid delay use the previous valid delay.
 	static Tick s_prevStopDelay = 0;
+	static JBool s_infLevelLoading = JFALSE;
 
 	// Forward Declarations.
 	void inf_elevatorTaskFunc(MessageType msg);
@@ -82,6 +83,7 @@ namespace TFE_Jedi
 	void inf_handleTriggerMsg(InfTrigger* trigger);
 
 	void inf_deleteElevator(InfElevator* elev);
+	void inf_gotoInitialStop(InfElevator* elev, s32 stopIndex);
 	void inf_deleteTrigger(InfTrigger* trigger);
 	JBool updateElevator(InfElevator* elev);
 	void elevHandleStopDelay(InfElevator* elev);
@@ -125,6 +127,85 @@ namespace TFE_Jedi
 	{
 		s_infSerState.infElevators = allocator_create(sizeof(InfElevator));
 		s_infState.infElevTask = createSubTask("elevator", inf_elevatorTaskFunc, inf_elevatorTaskLocal);
+		// Do not tick until level load finishes — parsing yields and nextTick defaults to 0,
+		// which would let elevators (SECBASE drop cage) finish during the loading screen.
+		task_setNextTick(s_infState.infElevTask, TASK_SLEEP);
+	}
+
+	void inf_activateLevelTasks()
+	{
+		if (s_infState.infElevTask)
+		{
+			task_makeActive(s_infState.infElevTask);
+		}
+		if (s_infState.teleportTask)
+		{
+			task_makeActive(s_infState.teleportTask);
+		}
+	}
+
+	void inf_beginLevelLoad()
+	{
+		s_infLevelLoading = JTRUE;
+	}
+
+	static void inf_resetElevatorsToInitialStops()
+	{
+		InfElevator* elev = (InfElevator*)allocator_getHead(s_infSerState.infElevators);
+		while (elev)
+		{
+			if (!elev->deleted && elev->stops)
+			{
+				elev->updateFlags &= ~(ELEV_MOVING | ELEV_CRUSH);
+				elev->loopingSoundID = NULL_SOUND;
+				inf_gotoInitialStop(elev, elev->initStopIndex);
+			}
+			elev = (InfElevator*)allocator_getNext(s_infSerState.infElevators);
+		}
+	}
+
+	static void inf_wakeupPausedActors()
+	{
+		RSector* sector = s_levelState.sectors;
+		for (u32 i = 0; i < s_levelState.sectorCount; i++, sector++)
+		{
+			s32 objCount = sector->objectCount;
+			s32 objCapacity = sector->objectCapacity;
+			SecObject** objList = sector->objectList;
+
+			for (s32 j = 0; j < objCount && j < objCapacity; objList++)
+			{
+				SecObject* obj = *objList;
+				if (obj)
+				{
+					if (obj->entityFlags & ETFLAG_CAN_WAKE)
+					{
+						message_sendToObj(obj, MSG_WAKEUP, nullptr);
+					}
+					j++;
+				}
+			}
+		}
+	}
+
+	void inf_finishLevelLoad(JBool newLevel)
+	{
+		if (newLevel)
+		{
+			inf_resetElevatorsToInitialStops();
+		}
+		s_infLevelLoading = JFALSE;
+	}
+
+	void inf_beginGameplay(JBool newLevel)
+	{
+		inf_activateLevelTasks();
+		if (newLevel)
+		{
+			// SECBASE (and other levels) use paused VUE actors for intros — wake them once
+			// ticks are running so sector ENTER events can trigger elevators (drop cage).
+			inf_wakeupPausedActors();
+		}
 	}
 
 	void inf_createTeleportTask()
@@ -200,9 +281,11 @@ namespace TFE_Jedi
 
 	void inf_gotoInitialStop(InfElevator* elev, s32 stopIndex)
 	{
-		if (!elev || !elev->stops)
+		if (!elev) { return; }
+		elev->initStopIndex = stopIndex;
+		if (!elev->stops)
 		{
-			if (elev) { elev->nextTick = s_curTick; }
+			elev->nextTick = s_curTick;
 			return;
 		}
 
@@ -224,6 +307,7 @@ namespace TFE_Jedi
 
 		elev->fixedStep = fixedStep;
 		elev->speed = speed;
+		s_deltaTime = dt;
 
 		Stop* next = elev->nextStop;
 		Tick delay = next->delay;
@@ -244,7 +328,7 @@ namespace TFE_Jedi
 		}
 
 		// Setup the next stop.
-		elev->nextStop = inf_advanceStops(elev->stops, 0, 1);
+		elev->nextStop = inf_advanceStops(elev->stops, stopIndex, 1);
 	}
 		
 	InfElevator* inf_allocateElevItem(RSector* sector, InfElevatorType type)
@@ -267,6 +351,8 @@ namespace TFE_Jedi
 		elev->flags = 0;
 		elev->loopingSoundID = NULL_SOUND;
 		elev->deleted = JFALSE;
+		elev->nextTick = DELAY_SLEEP;
+		elev->initStopIndex = 0;
 
 		elev->type = type;
 		elev->self = elev;
@@ -2489,7 +2575,7 @@ namespace TFE_Jedi
 	// This is the same code for walls and sectors.
 	void inf_sendLinkMessages(Allocator* infLink, SecObject* entity, u32 evt, MessageType msgType)
 	{
-		if (!infLink) { return; }
+		if (!infLink || s_infLevelLoading) { return; }
 
 		InfLink* link = (InfLink*)allocator_getHead(infLink);
 		while (link)

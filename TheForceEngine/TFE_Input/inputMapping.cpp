@@ -1,6 +1,8 @@
 #include <cstring>
 #include <cstdlib>
 
+#include <SDL.h>
+
 #include "inputMapping.h"
 #include <TFE_Game/igame.h>
 #include <TFE_FileSystem/paths.h>
@@ -10,6 +12,7 @@
 #include <TFE_DarkForces/hud.h>
 #include <TFE_DarkForces/player.h>
 #include <TFE_DarkForces/GameUI/pda.h>
+#include <TFE_Ui/ui.h>
 
 namespace TFE_Input
 {
@@ -21,13 +24,18 @@ namespace TFE_Input
 		INPUT_ADD_HIGH_DEF  = 0x00020003,
 		INPUT_DEMO_CONFIG   = 0x00020004,
 		INPUT_HANDHELD_PAD  = 0x00020005,
-		INPUT_CUR_VERSION = INPUT_HANDHELD_PAD
+		INPUT_HANDHELD_AUTORUN_L1 = 0x00020007,
+		INPUT_HANDHELD_AUTORUN_L3 = 0x00020008,
+		INPUT_CUR_VERSION = INPUT_HANDHELD_AUTORUN_L3
 	};
 
 	static const char* c_inputRemappingName = "tfe_input_remapping.bin";
 	static const char  c_inputRemappingHdr[4] = { 'T', 'F', 'E', 0 };
 	static const u32   c_inputRemappingVersion = INPUT_CUR_VERSION;
-		
+
+	static constexpr f32 c_defaultCtrlDeadzoneDesktop = 0.10f;
+	static constexpr f32 c_defaultCtrlDeadzoneHandheld = 0.12f;
+
 	static InputBinding s_defaultKeyboardBinds[] =
 	{
 		// System
@@ -143,17 +151,24 @@ namespace TFE_Input
 	void inputMapping_setControllerBinding(InputAction action, Button button);
 	void inputMapping_applyControllerAction(InputAction action, bool pressed, bool down);
 	bool inputMapping_isHandheld();
+	bool inputMapping_isHandheldNoSticks();
 	bool inputMapping_isDpadButton(Button button);
 	bool inputMapping_isUseModifierHeld();
+	bool inputMapping_isStrafeModifierHeld();
 	bool inputMapping_shouldSkipHandheldDpadBind(InputBinding* bind);
 	void inputMapping_applyHandheldDpadMovement();
 	bool inputMapping_isMovementAction(InputAction action);
+	bool inputMapping_controllerButtonIsBound(Button button);
+	void inputMapping_applyHandheldAutorunToggle();
+	void inputMapping_applyHandheldAutorunDoubleTap();
+	void inputMapping_removeControllerButtonBinding(Button button, InputAction action);
 			   
 	void inputMapping_startup()
 	{
 		// First try to restore from disk.
 		if (inputMapping_restore())
 		{
+			inputMapping_applyHandheldDeadzoneDefaults(true);
 			return;
 		}
 
@@ -188,8 +203,9 @@ namespace TFE_Input
 		s_inputConfig.axis[AA_MOVE] = AXIS_LEFT_Y;
 		s_inputConfig.ctrlSensitivity[0] = 1.0f;
 		s_inputConfig.ctrlSensitivity[1] = 1.0f;
-		s_inputConfig.ctrlDeadzone[0] = 0.1f;
-		s_inputConfig.ctrlDeadzone[1] = 0.1f;
+		const f32 defaultDeadzone = tfe_UseHandheld() ? c_defaultCtrlDeadzoneHandheld : c_defaultCtrlDeadzoneDesktop;
+		s_inputConfig.ctrlDeadzone[0] = defaultDeadzone;
+		s_inputConfig.ctrlDeadzone[1] = defaultDeadzone;
 
 		// Mouse
 		s_inputConfig.mouseFlags = 0;
@@ -199,6 +215,29 @@ namespace TFE_Input
 
 		memset(s_actions, 0, sizeof(ActionState) * IA_COUNT);
 		addDefaultControlBinds();
+	}
+
+	void inputMapping_applyHandheldDeadzoneDefaults(bool serializeIfChanged)
+	{
+		if (!tfe_UseHandheld())
+		{
+			return;
+		}
+
+		bool updated = false;
+		for (s32 i = 0; i < 2; i++)
+		{
+			if (s_inputConfig.ctrlDeadzone[i] > 0.0f && s_inputConfig.ctrlDeadzone[i] <= c_defaultCtrlDeadzoneDesktop)
+			{
+				s_inputConfig.ctrlDeadzone[i] = c_defaultCtrlDeadzoneHandheld;
+				updated = true;
+			}
+		}
+
+		if (updated && serializeIfChanged)
+		{
+			inputMapping_serialize();
+		}
 	}
 		
 	bool inputMapping_serialize()
@@ -280,8 +319,9 @@ namespace TFE_Input
 		}
 		else
 		{
-			s_inputConfig.ctrlDeadzone[0] = 0.1f;
-			s_inputConfig.ctrlDeadzone[1] = 0.1f;
+			const f32 defaultDeadzone = tfe_UseHandheld() ? c_defaultCtrlDeadzoneHandheld : c_defaultCtrlDeadzoneDesktop;
+			s_inputConfig.ctrlDeadzone[0] = defaultDeadzone;
+			s_inputConfig.ctrlDeadzone[1] = defaultDeadzone;
 		}
 
 		file.read(&s_inputConfig.mouseFlags);
@@ -318,6 +358,28 @@ namespace TFE_Input
 			inputMapping_setControllerBinding(IAS_SYSTEM_MENU, CONTROLLER_BUTTON_GUIDE);
 			inputMapping_setControllerBinding(IADF_MENU_TOGGLE, CONTROLLER_BUTTON_START);
 			inputMapping_setControllerBinding(IADF_PDA_TOGGLE, CONTROLLER_BUTTON_BACK);
+			inputMapping_serialize();
+		}
+
+		if (version < INPUT_HANDHELD_AUTORUN_L3)
+		{
+			bool hasL1Prev = false;
+			for (u32 i = 0; i < s_inputConfig.bindCount; i++)
+			{
+				const InputBinding* bind = &s_inputConfig.binds[i];
+				if (bind->action == IADF_CYCLEWPN_PREV && bind->type == ITYPE_CONTROLLER
+					&& bind->ctrlBtn == CONTROLLER_BUTTON_LEFTSHOULDER)
+				{
+					hasL1Prev = true;
+					break;
+				}
+			}
+			if (!hasL1Prev)
+			{
+				InputBinding prevWpn = { IADF_CYCLEWPN_PREV, ITYPE_CONTROLLER, CONTROLLER_BUTTON_LEFTSHOULDER };
+				inputMapping_addBinding(&prevWpn);
+			}
+			inputMapping_removeControllerButtonBinding(CONTROLLER_BUTTON_RIGHTSTICK, IADF_RUN);
 			inputMapping_serialize();
 		}
 
@@ -362,6 +424,11 @@ namespace TFE_Input
 		return tfe_UseHandheld() != 0;
 	}
 
+	bool inputMapping_isHandheldNoSticks()
+	{
+		return tfe_UseHandheldNoSticks() != 0;
+	}
+
 	bool inputMapping_isDpadButton(Button button)
 	{
 		return button >= CONTROLLER_BUTTON_DPAD_UP && button <= CONTROLLER_BUTTON_DPAD_RIGHT;
@@ -383,6 +450,88 @@ namespace TFE_Input
 			}
 		}
 		return false;
+	}
+
+	bool inputMapping_isStrafeModifierHeld()
+	{
+		if (!inputMapping_isHandheldNoSticks())
+		{
+			return false;
+		}
+		if (!(s_inputConfig.controllerFlags & CFLAG_ENABLE))
+		{
+			return false;
+		}
+		return TFE_Input::getAxis(AXIS_LEFT_TRIGGER) > 0.5f;
+	}
+
+	static bool inputMapping_shouldApplyHandheldTankControls()
+	{
+		return inputMapping_isHandheldNoSticks()
+			&& !inputMapping_isUseModifierHeld()
+			&& !inputMapping_isStrafeModifierHeld();
+	}
+
+	static f32 inputMapping_getRawControllerAxis(Axis mappedAxis)
+	{
+		f32 axisValue = TFE_Input::getAxis(mappedAxis);
+		if (s_inputConfig.controllerFlags & (1 << (mappedAxis + 1)))
+		{
+			axisValue = -axisValue;
+		}
+
+		const f32 sensitivity = s_inputConfig.ctrlSensitivity[mappedAxis < AXIS_RIGHT_X ? 0 : 1];
+		f32 deadzone = s_inputConfig.ctrlDeadzone[mappedAxis < AXIS_RIGHT_X ? 0 : 1];
+		if (fabsf(axisValue) <= deadzone)
+		{
+			axisValue = 0.0f;
+		}
+		else if (deadzone > FLT_EPSILON)
+		{
+			deadzone *= ((axisValue < 0.0f) ? -1.0f : 1.0f);
+			axisValue = (axisValue - deadzone) * sensitivity / (1.0f - fabsf(deadzone));
+		}
+		else
+		{
+			axisValue = axisValue * sensitivity;
+		}
+
+		return axisValue;
+	}
+
+	static void inputMapping_suppressHandheldNoSticksSecondaryFire()
+	{
+		if (!inputMapping_isHandheldNoSticks())
+		{
+			return;
+		}
+		inputMapping_removeState(IADF_SECONDARY_FIRE);
+	}
+
+	static bool inputMapping_shoulderSystemMenuComboDown()
+	{
+		if (!(s_inputConfig.controllerFlags & CFLAG_ENABLE))
+		{
+			return false;
+		}
+
+		const f32 triggerThreshold = 0.5f;
+		return TFE_Input::buttonDown(CONTROLLER_BUTTON_LEFTSHOULDER)
+			&& TFE_Input::buttonDown(CONTROLLER_BUTTON_RIGHTSHOULDER)
+			&& TFE_Input::getAxis(AXIS_LEFT_TRIGGER) > triggerThreshold
+			&& TFE_Input::getAxis(AXIS_RIGHT_TRIGGER) > triggerThreshold;
+	}
+
+	static void inputMapping_applyShoulderSystemMenuCombo()
+	{
+		// Pads without a Guide button: L1+L2+R1+R2 toggles the ImGui system menu.
+		static bool s_wasDown = false;
+		const bool down = inputMapping_shoulderSystemMenuComboDown();
+		if (down && !s_wasDown)
+		{
+			s_actions[IAS_SYSTEM_MENU] = STATE_PRESSED;
+		}
+		s_wasDown = down;
 	}
 
 	bool inputMapping_shouldSkipHandheldDpadBind(InputBinding* bind)
@@ -437,6 +586,7 @@ namespace TFE_Input
 			|| TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_DOWN);
 		const bool dpadStrafeHeld = TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_LEFT)
 			|| TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_RIGHT);
+		const bool tankTurn = inputMapping_shouldApplyHandheldTankControls();
 
 		// Drive movement through digital actions. Do not keep calling setAxis() while
 		// the D-pad is held — injected values stick after release (no SDL re-center).
@@ -451,11 +601,25 @@ namespace TFE_Input
 
 		if (TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_LEFT))
 		{
-			inputMapping_applyControllerAction(IADF_STRAFE_LT, TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_LEFT), true);
+			if (tankTurn)
+			{
+				inputMapping_applyControllerAction(IADF_TURN_LT, TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_LEFT), true);
+			}
+			else
+			{
+				inputMapping_applyControllerAction(IADF_STRAFE_LT, TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_LEFT), true);
+			}
 		}
 		else if (TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_RIGHT))
 		{
-			inputMapping_applyControllerAction(IADF_STRAFE_RT, TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_RIGHT), true);
+			if (tankTurn)
+			{
+				inputMapping_applyControllerAction(IADF_TURN_RT, TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_RIGHT), true);
+			}
+			else
+			{
+				inputMapping_applyControllerAction(IADF_STRAFE_RT, TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_RIGHT), true);
+			}
 		}
 
 		// Clear any stale axis override left from an earlier D-pad press this session.
@@ -500,6 +664,103 @@ namespace TFE_Input
 	bool inputMapping_isMovementAction(InputAction action)
 	{
 		return action >= IADF_FORWARD && action <= IADF_LOOK_DN;
+	}
+
+	bool inputMapping_controllerButtonIsBound(Button button)
+	{
+		if (!(s_inputConfig.controllerFlags & CFLAG_ENABLE))
+		{
+			return false;
+		}
+
+		for (u32 i = 0; i < s_inputConfig.bindCount; i++)
+		{
+			const InputBinding* bind = &s_inputConfig.binds[i];
+			if (bind->type == ITYPE_CONTROLLER && bind->ctrlBtn == button)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void inputMapping_removeControllerButtonBinding(Button button, InputAction action)
+	{
+		for (u32 i = 0; i < s_inputConfig.bindCount; )
+		{
+			const InputBinding* bind = &s_inputConfig.binds[i];
+			if (bind->type == ITYPE_CONTROLLER && bind->ctrlBtn == button && bind->action == action)
+			{
+				inputMapping_removeBinding(i);
+			}
+			else
+			{
+				i++;
+			}
+		}
+	}
+
+	static const u32 RUN_AUTORUN_DOUBLE_TAP_MS = 350;
+	static u32 s_lastRunPressMs = 0;
+
+	static void inputMapping_toggleAutorun()
+	{
+		TFE_Settings_Game* game = TFE_Settings::getGameSettings();
+		game->df_autorun = !game->df_autorun;
+		TFE_Settings::writeToDisk();
+		// Same on-screen slot as pickup messages (top of HUD, short duration).
+		TFE_DarkForces::hud_sendTextMessage("Toggle autorun", 2, false);
+	}
+
+	void inputMapping_applyHandheldAutorunDoubleTap()
+	{
+		if (!inputMapping_isHandheld() || !(s_inputConfig.controllerFlags & CFLAG_ENABLE))
+		{
+			return;
+		}
+		if (TFE_Ui::isHandheldConfigMenuActive())
+		{
+			return;
+		}
+		if (!(inputMapping_getActionState(IADF_RUN) & STATE_PRESSED))
+		{
+			return;
+		}
+
+		const u32 now = SDL_GetTicks();
+		if (s_lastRunPressMs != 0 && now - s_lastRunPressMs <= RUN_AUTORUN_DOUBLE_TAP_MS)
+		{
+			inputMapping_toggleAutorun();
+			s_lastRunPressMs = 0;
+			inputMapping_removeState(IADF_RUN);
+		}
+		else
+		{
+			s_lastRunPressMs = now;
+		}
+	}
+
+	void inputMapping_applyHandheldAutorunToggle()
+	{
+		if (!inputMapping_isHandheld() || !(s_inputConfig.controllerFlags & CFLAG_ENABLE))
+		{
+			return;
+		}
+		// L1/R1 are used for system-menu panel focus; never hijack them here.
+		if (TFE_Ui::isHandheldConfigMenuActive())
+		{
+			return;
+		}
+		if (inputMapping_controllerButtonIsBound(CONTROLLER_BUTTON_LEFTSTICK))
+		{
+			return;
+		}
+		if (!TFE_Input::buttonPressed(CONTROLLER_BUTTON_LEFTSTICK))
+		{
+			return;
+		}
+
+		inputMapping_toggleAutorun();
 	}
 
 	void inputMapping_setReplayCounter(int counter)
@@ -610,6 +871,13 @@ namespace TFE_Input
 						break;
 					}
 
+					if (inputMapping_isHandheldNoSticks()
+						&& bind->action == IADF_SECONDARY_FIRE
+						&& bind->axis == AXIS_LEFT_TRIGGER)
+					{
+						break;
+					}
+
 					if (TFE_Input::getAxis(bind->axis) > 0.5f)
 					{
 						s_actions[bind->action] = STATE_DOWN;
@@ -620,11 +888,28 @@ namespace TFE_Input
 		}
 
 		inputMapping_applyHandheldDpadMovement();
+		inputMapping_suppressHandheldNoSticksSecondaryFire();
+		inputMapping_applyShoulderSystemMenuCombo();
+		inputMapping_applyHandheldAutorunDoubleTap();
+		inputMapping_applyHandheldAutorunToggle();
 	}
 
 	void inputMapping_removeState(InputAction action)
 	{
 		s_actions[action] = STATE_UP;
+	}
+
+	void inputMapping_consumeControllerButton(Button button)
+	{
+		for (u32 i = 0; i < s_inputConfig.bindCount; i++)
+		{
+			InputBinding* bind = &s_inputConfig.binds[i];
+			if (bind->type == ITYPE_CONTROLLER && bind->ctrlBtn == button)
+			{
+				inputMapping_removeState(bind->action);
+			}
+		}
+		TFE_Input::clearControllerButton(button);
 	}
 
 	void inputMapping_setStateDown(InputAction action)
@@ -663,31 +948,24 @@ namespace TFE_Input
 			return 0.0f;
 		}
 
+		if (inputMapping_shouldApplyHandheldTankControls())
+		{
+			if (axis == AA_STRAFE)
+			{
+				return 0.0f;
+			}
+			if (axis == AA_LOOK_HORZ)
+			{
+				const f32 leftX = inputMapping_getRawControllerAxis(AXIS_LEFT_X);
+				if (fabsf(leftX) > FLT_EPSILON)
+				{
+					return leftX;
+				}
+			}
+		}
+
 		Axis mappedAxis = s_inputConfig.axis[axis];
-		f32 axisValue = TFE_Input::getAxis(mappedAxis);
-		if (s_inputConfig.controllerFlags & (1 << (mappedAxis + 1)))
-		{
-			axisValue = -axisValue;
-		}
-
-		const f32 sensitivity = s_inputConfig.ctrlSensitivity[mappedAxis < AXIS_RIGHT_X ? 0 : 1];
-		f32 deadzone = s_inputConfig.ctrlDeadzone[mappedAxis < AXIS_RIGHT_X ? 0 : 1];
-		if (fabsf(axisValue) <= deadzone)
-		{
-			axisValue = 0.0f;
-		}
-		else if (deadzone > FLT_EPSILON)
-		{
-			deadzone *= ((axisValue < 0.0f) ? -1.0f : 1.0f);
-			// sensitivity is adjusted by the new range, so larger deadzones don't decrease the maximum output.
-			axisValue = (axisValue - deadzone) * sensitivity / (1.0f - fabsf(deadzone));
-		}
-		else
-		{
-			axisValue = axisValue * sensitivity;
-		}
-
-		return axisValue;
+		return inputMapping_getRawControllerAxis(mappedAxis);
 	}
 
 	f32 inputMapping_getHorzMouseSensitivity()

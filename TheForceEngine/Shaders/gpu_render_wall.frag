@@ -187,7 +187,7 @@ float getBayerIndex(vec2 uv)
 		vec4(02.0/16.0, 14.0/16.0, 01.0/16.0, 13.0/16.0),
 		vec4(10.0/16.0, 06.0/16.0, 09.0/16.0, 05.0/16.0));
 
-	ivec2 iuv = ivec2(uv * 2.0);
+	ivec2 iuv = TFE_FTOI2(uv * 2.0);
 	return bayerIndex[iuv.x&3][iuv.y&3];
 }
 
@@ -207,6 +207,15 @@ void main()
 
 	// Compute the texture coordinates.
 	vec2 uv = computeUV(Frag_Uv.y, cameraRelativePos, skyFade, yLimit, sign, applyFlatWarp);
+
+#ifdef SECTOR_TRANSPARENT_PASS
+	// Sign overlays use a full-wall quad; skip shading outside the sign bounds.
+	if (sign && signSampleOutOfBounds(Frag_TextureId, uv, opaque))
+	{
+		discard;
+	}
+#endif
+
 	// Compute the shading (light) value.
 	float light = computeShading(sky || fullbright, cameraRelativePos);
 		

@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <algorithm>
+#include <cstring>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN 1
@@ -69,6 +70,9 @@ namespace TFE_RenderBackend
 	static BloomThreshold* s_bloomTheshold;
 	static BloomDownsample* s_bloomDownsample;
 	static BloomMerge* s_bloomMerge;
+	static u32 s_bloomBufferCount = 0;
+	static RenderTarget* s_bloomTargets[16] = { 0 };
+	static TextureGpu* s_bloomTextures[16] = { 0 };
 	static std::vector<SDL_Rect> s_displayBounds;
 
 	static SDL_Window* s_window = nullptr;
@@ -271,26 +275,39 @@ static bool tfe_TryCreateGLWindow(const WindowState& state, s32 x, s32 y, u32 wi
 			uiScale = 150;
 		}
 
-    if (s_isMacOS || tfe_UseGLES()) {
-			// GLES 3.x and macOS core profile require a bound VAO for draws.
-			glGenVertexArrays(1, &s_globalVAO);
-			if (!s_globalVAO)
+		// Small handheld panels (e.g. 480x320): shrink ImGui so menus fit on short edges.
+		if (tfe_UseHandheld())
+		{
+			const s32 panelMin = std::min(monitorInfo.w, monitorInfo.h);
+			if (panelMin < 720)
 			{
-				TFE_System::logWrite(LOG_ERROR, "RenderBackend", "Failed to create global VAO");
-				SDL_DestroyWindow(window);
-				return nullptr;
+				// 320p ~65%, 400p ~78%, 480p ~88%, capped so 640-wide panels stay readable.
+				uiScale = std::min(88, std::max(58, (100 * panelMin) / 490));
 			}
-			glBindVertexArray(s_globalVAO);
-			TFE_System::logWrite(LOG_MSG, "RenderBackend", "Global VAO created.");
+			if (monitorInfo.h <= 360)
+			{
+				uiScale = std::min(uiScale, 68);
+			}
+		}
 
-			if (s_isMacOS) {
-				// handle Retina displays
-				s32 drawableWidth, drawableHeight;
-				SDL_GL_GetDrawableSize(window, &drawableWidth, &drawableHeight);
-				if (drawableWidth > state.width)
-				{
-					uiScale = (uiScale * drawableWidth) / state.width;
-				}
+		// OpenGL 3+ core profile and GLES require a bound VAO for draws.
+		glGenVertexArrays(1, &s_globalVAO);
+		if (!s_globalVAO)
+		{
+			TFE_System::logWrite(LOG_ERROR, "RenderBackend", "Failed to create global VAO");
+			SDL_DestroyWindow(window);
+			return nullptr;
+		}
+		glBindVertexArray(s_globalVAO);
+		TFE_System::logWrite(LOG_MSG, "RenderBackend", "Global VAO created.");
+
+		if (s_isMacOS) {
+			// handle Retina displays
+			s32 drawableWidth, drawableHeight;
+			SDL_GL_GetDrawableSize(window, &drawableWidth, &drawableHeight);
+			if (drawableWidth > state.width)
+			{
+				uiScale = (uiScale * drawableWidth) / state.width;
 			}
 		}
 
@@ -362,9 +379,61 @@ static bool tfe_TryCreateGLWindow(const WindowState& state, s32 x, s32 y, u32 wi
 		return true;
 	}
 
+	static void unbindGLDrawState()
+	{
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+#if defined(TFE_RUNTIME_GL)
+		if (!tfe_UseGLES())
+		{
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+		}
+#endif
+		glUseProgram(0);
+		glBindVertexArray(0);
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, 0);
+	}
+
+	static void freeBloomBuffers()
+	{
+		for (u32 i = 0; i < s_bloomBufferCount; i++)
+		{
+			delete s_bloomTargets[i];
+			delete s_bloomTextures[i];
+			s_bloomTargets[i] = nullptr;
+			s_bloomTextures[i] = nullptr;
+		}
+		s_bloomBufferCount = 0;
+	}
+
 	void destroy()
 	{
-		if ((s_isMacOS || tfe_UseGLES()) && s_globalVAO) {
+		SDL_Window* window = (SDL_Window*)m_window;
+		tfe_EnsureGLContextCurrent();
+
+		// Relative mouse grab can crash Hyprland if the Wayland surface vanishes first.
+		SDL_SetRelativeMouseMode(SDL_FALSE);
+		SDL_ShowCursor(SDL_ENABLE);
+
+#ifndef _WIN32
+		if (window && (m_windowState.flags & WINFLAG_FULLSCREEN))
+		{
+			const char* driver = SDL_GetCurrentVideoDriver();
+			if (!driver || strcmp(driver, "kmsdrm") != 0)
+			{
+				SDL_SetWindowFullscreen(window, 0);
+				SDL_PumpEvents();
+				SDL_Delay(16);
+			}
+		}
+#endif
+
+		TFE_Ui::shutdown();
+
+		if (s_globalVAO) {
 			glDeleteVertexArrays(1, &s_globalVAO);
 			s_globalVAO = 0;
 		}
@@ -373,30 +442,64 @@ static bool tfe_TryCreateGLWindow(const WindowState& state, s32 x, s32 y, u32 wi
 		s_screenCapture = nullptr;
 
 		// TODO: Move effect destruction into post effect system.
-		s_postEffectBlit->destroy();
-		delete s_postEffectBlit;
-		s_postEffectBlit = nullptr;
+		if (s_postEffectBlit)
+		{
+			s_postEffectBlit->destroy();
+			delete s_postEffectBlit;
+			s_postEffectBlit = nullptr;
+		}
 
-		s_bloomTheshold->destroy();
-		delete s_bloomTheshold;
-		s_bloomTheshold = nullptr;
+		if (s_bloomTheshold)
+		{
+			s_bloomTheshold->destroy();
+			delete s_bloomTheshold;
+			s_bloomTheshold = nullptr;
+		}
 
-		s_bloomDownsample->destroy();
-		delete s_bloomDownsample;
-		s_bloomDownsample = nullptr;
+		if (s_bloomDownsample)
+		{
+			s_bloomDownsample->destroy();
+			delete s_bloomDownsample;
+			s_bloomDownsample = nullptr;
+		}
 
-		s_bloomMerge->destroy();
-		delete s_bloomMerge;
-		s_bloomMerge = nullptr;
+		if (s_bloomMerge)
+		{
+			s_bloomMerge->destroy();
+			delete s_bloomMerge;
+			s_bloomMerge = nullptr;
+		}
 
 		TFE_PostProcess::destroy();
-		TFE_Ui::shutdown();
+		freeBloomBuffers();
+
+		delete s_palette;
+		s_palette = nullptr;
 
 		delete s_virtualDisplay;
 		delete s_virtualRenderTarget;
 		delete s_virtualRenderTexture;
 		delete s_materialRenderTexture;
-		SDL_DestroyWindow((SDL_Window*)m_window);
+
+		unbindGLDrawState();
+#ifndef _WIN32
+		glFlush();
+#else
+		glFinish();
+#endif
+
+		if (window)
+		{
+			SDL_HideWindow(window);
+			SDL_PumpEvents();
+		}
+
+		tfe_DestroyActiveGLContext();
+		if (window)
+		{
+			SDL_DestroyWindow(window);
+			SDL_PumpEvents();
+		}
 
 		s_virtualDisplay = nullptr;
 		s_virtualRenderTarget = nullptr;
@@ -658,6 +761,62 @@ static bool tfe_TryCreateGLWindow(const WindowState& state, s32 x, s32 y, u32 wi
 		displayInfo->refreshRate = (m_windowState.flags & WINFLAG_VSYNC) != 0 ? m_windowState.refreshRate : 0.0f;
 	}
 
+	void getReferenceDisplaySize(s32* width, s32* height)
+	{
+		assert(width && height);
+		DisplayInfo windowInfo;
+		getDisplayInfo(&windowInfo);
+		*width = windowInfo.width;
+		*height = windowInfo.height;
+
+		// Handheld: widescreen FOV should match the physical panel, not a windowed 16:9 framebuffer.
+		if (tfe_UseHandheld())
+		{
+			MonitorInfo monitor = {};
+			getCurrentMonitorInfo(&monitor);
+			if (monitor.w > 0 && monitor.h > 0)
+			{
+				*width = monitor.w;
+				*height = monitor.h;
+			}
+		}
+	}
+
+	bool isSquareDisplayAspect(s32 width, s32 height)
+	{
+		if (width <= 0 || height <= 0)
+		{
+			return false;
+		}
+		const f32 aspect = f32(width) / f32(height);
+		return aspect > 0.9f && aspect < 1.1f;
+	}
+
+	void computeRenderResolution(s32 gameWidth, s32 gameHeight, bool widescreen, s32* outWidth, s32* outHeight)
+	{
+		assert(outWidth && outHeight);
+		s32 width = gameWidth;
+		const s32 height = gameHeight;
+		*outHeight = height;
+
+		if (widescreen)
+		{
+			s32 refW = 0;
+			s32 refH = 0;
+			getReferenceDisplaySize(&refW, &refH);
+			if (height == 200 || height == 400)
+			{
+				width = (height * refW / refH) * 12 / 10;
+			}
+			else
+			{
+				width = height * refW / refH;
+			}
+		}
+
+		*outWidth = 4 * ((width + 3) >> 2);
+	}
+
 	bool recreateDisplay(bool setupPostFx)
 	{
 		if (s_virtualDisplay)
@@ -726,10 +885,20 @@ static bool tfe_TryCreateGLWindow(const WindowState& state, s32 x, s32 y, u32 wi
 				s_postEffectBlit->disableFeatures(BLIT_GPU_COLOR_CONVERSION);
 			}
 			s_postEffectBlit->disableFeatures(BLIT_BLOOM);
-			if (setupPostFx) { setupPostEffectChain(true, false); }
 			result = s_virtualDisplay->create(s_virtualWidth, s_virtualHeight, s_asyncFrameBuffer ? 2 : 1, s_gpuColorConvert ? DTEX_R8 : DTEX_RGBA8);
+			if (setupPostFx) { setupPostEffectChain(true, false); }
 		}
 		return result;
+	}
+
+	void setVirtualDisplayOutputMode(DisplayMode mode)
+	{
+		if (s_displayMode == mode)
+		{
+			return;
+		}
+		s_displayMode = mode;
+		setupPostEffectChain(!s_useRenderTarget, s_bloomEnable);
 	}
 
 	// New version of the function.
@@ -1064,10 +1233,6 @@ static bool tfe_TryCreateGLWindow(const WindowState& state, s32 x, s32 y, u32 wi
 		glDrawArrays(GL_LINES, 0, lineCount * 2);
 	}
 
-	static u32 s_bloomBufferCount = 0;
-	static RenderTarget* s_bloomTargets[16] = { 0 };
-	static TextureGpu* s_bloomTextures[16] = { 0 };
-
 	static TexFormat bloomTextureFormat()
 	{
 #if defined(TFE_RUNTIME_GL)
@@ -1198,9 +1363,7 @@ static bool tfe_TryCreateGLWindow(const WindowState& state, s32 x, s32 y, u32 wi
 		}
 		else if (s_displayMode == DMODE_ASPECT_CORRECT && (!s_widescreen || aspect <= c_tallScreenThreshold))
 		{
-			// Disable widescreen.
-			s_widescreen = false;
-			TFE_Settings::getGraphicsSettings()->widescreen = false;
+			// Letterbox to 4:3 for output; do not mutate saved settings (breaks Graphics menu on 1:1 handhelds).
 
 			// Calculate height based on width.
 			h = 3 * m_windowState.width / 4;
@@ -1245,7 +1408,7 @@ static bool tfe_TryCreateGLWindow(const WindowState& state, s32 x, s32 y, u32 wi
 
 	void bindGlobalVAO(void)
 	{
-		if ((s_isMacOS || tfe_UseGLES()) && s_globalVAO) {
+		if (s_globalVAO) {
 			glBindVertexArray(s_globalVAO);
 		}
 	}

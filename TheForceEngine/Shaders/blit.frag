@@ -1,3 +1,11 @@
+#ifdef TFE_BUFFER_TEXTURE_BYTES
+#include "Shaders/bufferAccess.h"
+#else
+#ifndef TFE_FTOI
+#define TFE_FTOI(x) int(x)
+#endif
+#endif
+
 uniform sampler2D VirtualDisplay;
 
 #ifdef ENABLE_BLOOM
@@ -58,7 +66,7 @@ void main()
 #ifdef ENABLE_GPU_COLOR_CONVERSION
 	// R8 indices are normalized to [0,1] as c/255. Use texelFetch for exact palette
 	// lookups — texture(Palette, vec2(index, 0.5)) bleeds at high indices on GLES.
-	int palIndex = int(texture(VirtualDisplay, Frag_UV).r * 255.0 + 0.5);
+	int palIndex = TFE_FTOI(texture(VirtualDisplay, Frag_UV).r * 255.0 + 0.5);
 	palIndex = clamp(palIndex, 0, 255);
 	Out_Color.rgb = texelFetch(Palette, ivec2(palIndex, 0), 0).rgb;
 #else

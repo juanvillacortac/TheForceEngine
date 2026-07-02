@@ -32,6 +32,10 @@ namespace TFE_Jedi
 	void inf_createElevatorTask();
 	void inf_createTeleportTask();
 	void inf_createTriggerTask();
+	// Resume INF tick-driven tasks after level data (and INF parsing) is complete.
+	void inf_beginLevelLoad();
+	void inf_finishLevelLoad(JBool newLevel);
+	void inf_beginGameplay(JBool newLevel);
 
 	// Serialization & State
 	void inf_clearState();

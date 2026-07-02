@@ -4,6 +4,7 @@
 //////////////////////////
 
 #include <TFE_System/types.h>
+#include <TFE_Jedi/Math/core_math.h>
 
 namespace TFE_ExternalData
 {
@@ -47,7 +48,7 @@ namespace TFE_ExternalData
 		u32 minAttackDist = 0;
 		u32 maxAttackDist = 160;
 		u32 fireSpread = 30;
-		vec3_float fireOffset = { 0, -1000, 0 };	// (y = -1000) will be treated as default
+		TFE_Jedi::vec3_float fireOffset = { 0, -1000, 0 };	// (y = -1000) will be treated as default
 
 		// burst fire
 		bool hasBurstFire = false;

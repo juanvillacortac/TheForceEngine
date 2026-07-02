@@ -39,7 +39,7 @@ float ditherLightLevel(float light)
 		vec4(08.0, 04.0, 11.0, 07.0),
 		vec4(02.0, 14.0, 01.0, 13.0),
 		vec4(10.0, 06.0, 09.0, 05.0)) / 16.0;
-	ivec2 p = ivec2(gl_FragCoord.xy) & 3;
+	ivec2 p = TFE_FTOI2(gl_FragCoord.xy) & 3;
 	return floor(light + bayer[p.x][p.y]);
 #endif
 	return light;
@@ -120,8 +120,8 @@ vec2 bilinearDither(vec2 uv)
 		vec2(0.25, 0.00), vec2(0.50, 0.75),
 		vec2(0.75, 0.50), vec2(0.00, 0.25));
 
-	int ix = int(gl_FragCoord.x) & 1;
-	int iy = int(gl_FragCoord.y) & 1;
+	int ix = TFE_FTOI(gl_FragCoord.x) & 1;
+	int iy = TFE_FTOI(gl_FragCoord.y) & 1;
 	uv += bilinearOffset[iy * 2 + ix];
 
 	return uv;
@@ -288,7 +288,7 @@ float sampleTexture(int id, vec2 uv)
 	uv = bilinearDither(uv);
 #endif
 
-	iuv.xy = ivec2(uv);
+	iuv.xy = TFE_FTOI2(uv);
 	iuv.z = 0;
 
 	iuv.xy = wrapCoord(iuv.xy, sampleData.zw);
@@ -309,7 +309,7 @@ float sampleTexture(int id, vec2 uv, bool sky, bool flip, bool applyFlatWarp)
 	uv = bilinearDither(uv);
 #endif
 
-	iuv.xy = ivec2(floor(uv));
+	iuv.xy = TFE_FTOI2(floor(uv));
 	iuv.z = 0;
 
 	if (sky)
@@ -358,7 +358,7 @@ float sampleTextureClamp(int id, vec2 uv)
 	uv = bilinearDither(uv);
 #endif
 
-	iuv.xy = ivec2(uv);
+	iuv.xy = TFE_FTOI2(uv);
 	iuv.z = 0;
 
 	if (any(lessThan(iuv.xy, ivec2(0))) || any(greaterThan(iuv.xy, sampleData.zw - 1)))
@@ -383,7 +383,7 @@ float sampleTextureClamp(int id, vec2 uv, bool opaque)
 	uv = bilinearDither(uv);
 #endif
 
-	iuv.xy = ivec2(floor(uv));
+	iuv.xy = TFE_FTOI2(floor(uv));
 	iuv.z = 0;
 
 	if (any(lessThan(iuv.xy, ivec2(0))) || any(greaterThan(iuv.xy, sampleData.zw - 1)))
@@ -399,29 +399,48 @@ float sampleTextureClamp(int id, vec2 uv, bool opaque)
 }
 #endif
 
+// Matches sampleTextureClamp() bounds so sign overlays can discard before lighting.
+bool signSampleOutOfBounds(int id, vec2 uv, bool opaque)
+{
+	ivec4 sampleData = tfe_fetchIBuffer(TextureTable, id);
+	sampleData.zw &= ivec2(32767);
+#ifdef OPT_TRUE_COLOR
+	uv = scaleUv(uv, sampleData.y);
+	uv = bilinearSharpness(uv, TexSamplingParam.x);
+	vec2 thres = vec2(0.25);
+	return any(lessThan(uv, thres)) || any(greaterThan(uv, vec2(sampleData.zw) - thres));
+#else
+#ifdef OPT_BILINEAR_DITHER
+	uv = bilinearDither(uv);
+#endif
+	ivec2 iuv = opaque ? TFE_FTOI2(floor(uv)) : TFE_FTOI2(uv);
+	return any(lessThan(iuv, ivec2(0))) || any(greaterThan(iuv, sampleData.zw - 1));
+#endif
+}
+
 vec3 getAttenuatedColor(int baseColor, int light)
 {
 	int color = baseColor;
 	if (light < 31)
 	{
 		ivec2 uv = ivec2(color, light);
-		color = int(texelFetch(Colormap, uv, 0).r * 255.0);
+		color = TFE_FTOI(texelFetch(Colormap, uv, 0).r * 255.0);
 	}
 	return texelFetch(Palette, ivec2(color, 0), 0).rgb;
 }
 
 vec3 getAttenuatedColorBlend(float baseColor, float light)
 {
-	int color = int(baseColor);
+	int color = TFE_FTOI(baseColor);
 	if (light < 31.0)
 	{
-		int l0 = int(light);
+		int l0 = TFE_FTOI(light);
 		int l1 = min(31, l0 + 1);
 		float blendFactor = fract(light);
 
 		ivec4 uv = ivec4(color, l0, color, l1);
-		int color0 = int(texelFetch(Colormap, uv.xy, 0).r * 255.0);
-		int color1 = int(texelFetch(Colormap, uv.zw, 0).r * 255.0);
+		int color0 = TFE_FTOI(texelFetch(Colormap, uv.xy, 0).r * 255.0);
+		int color1 = TFE_FTOI(texelFetch(Colormap, uv.zw, 0).r * 255.0);
 
 		vec3 value0 = texelFetch(Palette, ivec2(color0, 0), 0).rgb;
 		vec3 value1 = texelFetch(Palette, ivec2(color1, 0), 0).rgb;
@@ -459,7 +478,7 @@ vec3 trueColorMapping(int lightLevel, vec3 baseColor)
 
 vec3 generateColor(vec3 baseColor, float lightLevel)
 {
-	int l0 = min(31, int(lightLevel));
+	int l0 = min(31, TFE_FTOI(lightLevel));
 	int l1 = min(31, l0 + 1);
 	float blendFactor = fract(lightLevel);
 
@@ -497,7 +516,7 @@ vec4 getFinalColor(float baseColor, float lightLevel, float emissive)
 	#ifdef OPT_COLORMAP_INTERP
 		color.rgb = getAttenuatedColorBlend(baseColor, lit);
 	#else
-		color.rgb = getAttenuatedColor(int(baseColor), int(lit));
+		color.rgb = getAttenuatedColor(TFE_FTOI(baseColor), TFE_FTOI(lit));
 	#endif
 	color.a = 1.0;
 	return color;

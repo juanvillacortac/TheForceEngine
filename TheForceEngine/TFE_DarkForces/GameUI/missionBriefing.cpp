@@ -39,17 +39,16 @@ namespace TFE_DarkForces
 	};
 	static s32 s_keyPressed = -1;
 	static s32 s_briefHandheldFocus = BRIEF_BTN_OK;
-	static const s32 c_briefFocusOrder[] =
+	// D-pad left/right only — scroll up/down buttons are not in this list.
+	static const s32 c_briefNavRow[] =
 	{
-		BRIEF_BTN_OK,
-		BRIEF_BTN_UP,
-		BRIEF_BTN_DOWN,
-		BRIEF_BTN_CANCEL,
 		BRIEF_BTN_EASY,
 		BRIEF_BTN_MEDIUM,
 		BRIEF_BTN_HARD,
+		BRIEF_BTN_CANCEL,
+		BRIEF_BTN_OK,
 	};
-	static const s32 c_briefFocusCount = 7;
+	static const s32 c_briefNavCount = 5;
 	static JBool s_briefingOpen = JFALSE;
 	static s32 s_skill = 0;
 	static LRect s_briefRect = { 25, 15, 155, 305 };
@@ -98,8 +97,15 @@ namespace TFE_DarkForces
 	{
 		s_langKeys = langKeys;
 
+		u32 panelWidth = 0;
+		u32 panelHeight = 0;
+		const bool restorePanel = menu_saveHandheldPanelVfb(&panelWidth, &panelHeight);
 		menu_init();
 		menu_startupDisplay();
+		if (restorePanel)
+		{
+			menu_applyHandheldPanelVfb(panelWidth, panelHeight);
+		}
 
 		s_briefingOpen = JFALSE;
 		s_skill = skill;
@@ -231,6 +237,37 @@ namespace TFE_DarkForces
 			if (s_briefY > s_briefingMaxY) { s_briefY = s_briefingMaxY; }
 		}
 	}
+
+	static s32 briefIndexInList(const s32* list, s32 count, s32 focus)
+	{
+		for (s32 i = 0; i < count; i++)
+		{
+			if (list[i] == focus)
+			{
+				return i;
+			}
+		}
+		return 0;
+	}
+
+	static s32 briefMoveInList(const s32* list, s32 count, s32 focus, s32 delta)
+	{
+		s32 index = briefIndexInList(list, count, focus) + delta;
+		index = max(0, min(count - 1, index));
+		return list[index];
+	}
+
+	static JBool briefFocusIsNav(s32 focus)
+	{
+		for (s32 i = 0; i < c_briefNavCount; i++)
+		{
+			if (c_briefNavRow[i] == focus)
+			{
+				return JTRUE;
+			}
+		}
+		return JFALSE;
+	}
 		
 	JBool missionBriefing_handleInput(JBool* abort)
 	{
@@ -245,36 +282,26 @@ namespace TFE_DarkForces
 
 		if (menu_isHandheld())
 		{
-			auto moveBriefFocus = [](s32 delta)
+			if (!briefFocusIsNav(s_briefHandheldFocus))
 			{
-				s32 index = 0;
-				for (s32 i = 0; i < c_briefFocusCount; i++)
-				{
-					if (c_briefFocusOrder[i] == s_briefHandheldFocus)
-					{
-						index = i;
-						break;
-					}
-				}
-				index = (index + delta + c_briefFocusCount) % c_briefFocusCount;
-				s_briefHandheldFocus = c_briefFocusOrder[index];
-			};
+				s_briefHandheldFocus = BRIEF_BTN_OK;
+			}
 
-			if (menu_handheldNavPressed(MENU_NAV_LEFT))
+			if (menu_handheldNavPressed(MENU_NAV_UP))
 			{
-				moveBriefFocus(-1);
-			}
-			else if (menu_handheldNavPressed(MENU_NAV_RIGHT))
-			{
-				moveBriefFocus(1);
-			}
-			else if (menu_handheldNavPressed(MENU_NAV_UP))
-			{
-				moveBriefFocus(-1);
+				missionBriefing_scroll(-BRIEF_LINE_SCROLL);
 			}
 			else if (menu_handheldNavPressed(MENU_NAV_DOWN))
 			{
-				moveBriefFocus(1);
+				missionBriefing_scroll(BRIEF_LINE_SCROLL);
+			}
+			else if (menu_handheldNavPressed(MENU_NAV_LEFT))
+			{
+				s_briefHandheldFocus = briefMoveInList(c_briefNavRow, c_briefNavCount, s_briefHandheldFocus, -1);
+			}
+			else if (menu_handheldNavPressed(MENU_NAV_RIGHT))
+			{
+				s_briefHandheldFocus = briefMoveInList(c_briefNavRow, c_briefNavCount, s_briefHandheldFocus, 1);
 			}
 
 			s_keyPressed = s_briefHandheldFocus;
@@ -286,12 +313,6 @@ namespace TFE_DarkForces
 					case BRIEF_BTN_OK:
 						*abort = JFALSE;
 						exitBriefing = JTRUE;
-						break;
-					case BRIEF_BTN_UP:
-						missionBriefing_scroll(-BRIEF_LINE_SCROLL);
-						break;
-					case BRIEF_BTN_DOWN:
-						missionBriefing_scroll(BRIEF_LINE_SCROLL);
 						break;
 					case BRIEF_BTN_CANCEL:
 						*abort = JTRUE;
@@ -422,14 +443,20 @@ namespace TFE_DarkForces
 			{
 				s_keyPressed = -1;
 			}
-			if (TFE_Input::keyDown(KEY_UP) || (menu_isHandheld() && menu_handheldNavDown(MENU_NAV_UP) && s_briefHandheldFocus == BRIEF_BTN_UP))
+			if (TFE_Input::keyDown(KEY_UP) || (menu_isHandheld() && menu_handheldNavDown(MENU_NAV_UP)))
 			{
-				s_keyPressed = BRIEF_BTN_UP;
+				if (!menu_isHandheld())
+				{
+					s_keyPressed = BRIEF_BTN_UP;
+				}
 				missionBriefing_scroll(-BRIEF_LINE_SCROLL);
 			}
-			else if (TFE_Input::keyDown(KEY_DOWN) || (menu_isHandheld() && menu_handheldNavDown(MENU_NAV_DOWN) && s_briefHandheldFocus == BRIEF_BTN_DOWN))
+			else if (TFE_Input::keyDown(KEY_DOWN) || (menu_isHandheld() && menu_handheldNavDown(MENU_NAV_DOWN)))
 			{
-				s_keyPressed = BRIEF_BTN_DOWN;
+				if (!menu_isHandheld())
+				{
+					s_keyPressed = BRIEF_BTN_DOWN;
+				}
 				missionBriefing_scroll(BRIEF_LINE_SCROLL);
 			}
 			else if (menu_isHandheld())

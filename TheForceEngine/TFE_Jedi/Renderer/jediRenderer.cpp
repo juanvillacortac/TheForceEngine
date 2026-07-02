@@ -267,24 +267,13 @@ namespace TFE_Jedi
 	JBool render_setResolution(bool forceTextureUpdate)
 	{
 		TFE_Settings_Graphics* graphics = TFE_Settings::getGraphicsSettings();
-		DisplayInfo info;
-		TFE_RenderBackend::getDisplayInfo(&info);
 
 		const bool fovChanged = (graphics->fov != s_fov);
 		s_fov = graphics->fov;
 
 		s32 width  = graphics->gameResolution.x;
 		s32 height = graphics->gameResolution.z;
-		if (graphics->widescreen && (height == 200 || height == 400))
-		{
-			width = (height * info.width / info.height) * 12 / 10;
-		}
-		else if (graphics->widescreen)
-		{
-			width = height * info.width / info.height;
-		}
-		// Make sure the adjustedWidth is divisible by 4.
-		width = 4 * ((width + 3) >> 2);
+		TFE_RenderBackend::computeRenderResolution(width, height, graphics->widescreen != 0, &width, &height);
 
 		TFE_SubRenderer subRenderer = s_rendererType == RENDERER_HARDWARE ? TSR_CLASSIC_GPU : (width == 320 && height == 200) ? TSR_CLASSIC_FIXED : TSR_CLASSIC_FLOAT;
 		vfb_setMode(subRenderer == TSR_CLASSIC_GPU ? VFB_RENDER_TRAGET : VFB_TEXTURE);

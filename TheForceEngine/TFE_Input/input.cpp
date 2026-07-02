@@ -16,6 +16,7 @@ namespace TFE_Input
 	f32 s_axis[AXIS_COUNT] = { 0 };
 	u8 s_buttonDown[CONTROLLER_BUTTON_COUNT] = { 0 };
 	u8 s_buttonPressed[CONTROLLER_BUTTON_COUNT] = { 0 };
+	u8 s_ignoreControllerUntilRelease[CONTROLLER_BUTTON_COUNT] = { 0 };
 
 	u8 s_keyDown[KEY_COUNT] = { 0 };
 	u8 s_keyPressed[KEY_COUNT] = { 0 };
@@ -73,6 +74,10 @@ namespace TFE_Input
 
 	void setButtonDown(Button button)
 	{
+		if (s_ignoreControllerUntilRelease[button])
+		{
+			return;
+		}
 		if (!s_buttonDown[button])
 		{
 			s_buttonPressed[button] = 1;
@@ -83,6 +88,7 @@ namespace TFE_Input
 	void setButtonUp(Button button)
 	{
 		s_buttonDown[button] = 0;
+		s_ignoreControllerUntilRelease[button] = 0;
 	}
 
 	void setKeyPress(KeyboardCode key)
@@ -235,6 +241,71 @@ namespace TFE_Input
 	bool buttonPressed(Button button)
 	{
 		return s_buttonPressed[button] != 0;
+	}
+
+	void clearControllerButton(Button button)
+	{
+		s_buttonDown[button] = 0;
+		s_buttonPressed[button] = 0;
+		s_ignoreControllerUntilRelease[button] = 1;
+	}
+
+	static bool s_bindingCaptureArmed = false;
+
+	void armBindingCapture()
+	{
+		for (s32 i = 0; i < CONTROLLER_BUTTON_COUNT; i++)
+		{
+			if (s_buttonDown[i] || s_buttonPressed[i])
+			{
+				s_ignoreControllerUntilRelease[i] = 1;
+			}
+			s_buttonPressed[i] = 0;
+		}
+		for (s32 i = 0; i < KEY_COUNT; i++)
+		{
+			s_keyPressed[i] = 0;
+		}
+		for (s32 i = 0; i < MBUTTON_COUNT; i++)
+		{
+			s_mousePressed[i] = 0;
+		}
+		s_mouseWheel[0] = 0;
+		s_mouseWheel[1] = 0;
+		s_bindingCaptureArmed = true;
+	}
+
+	bool isBindingCaptureReady()
+	{
+		if (!s_bindingCaptureArmed)
+		{
+			return true;
+		}
+
+		for (s32 i = 0; i < CONTROLLER_BUTTON_COUNT; i++)
+		{
+			if (s_ignoreControllerUntilRelease[i] || s_buttonDown[i])
+			{
+				return false;
+			}
+		}
+		for (s32 i = 0; i < KEY_COUNT; i++)
+		{
+			if (s_keyDown[i])
+			{
+				return false;
+			}
+		}
+		for (s32 i = 0; i < MBUTTON_COUNT; i++)
+		{
+			if (s_mouseDown[i])
+			{
+				return false;
+			}
+		}
+
+		s_bindingCaptureArmed = false;
+		return true;
 	}
 
 	bool keyDown(KeyboardCode key)

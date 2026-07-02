@@ -95,6 +95,50 @@ namespace TFE_DarkForces
 	};
 	static s32 s_agentHandheldFocus = AH_FOCUS_AGENT;
 	static s32 s_agentDlgFocus = NEW_AGENT_NO;
+	static JBool s_agentDlgIgnoreActivate = JFALSE;
+
+	static void agentMenu_setHandheldFocusForAgentCount()
+	{
+		if (s_agentCount > 0)
+		{
+			s_agentHandheldFocus = AH_FOCUS_AGENT;
+		}
+		else
+		{
+			s_agentHandheldFocus = AH_FOCUS_NEW;
+		}
+	}
+
+	static void agentMenu_openHandheldDlg(s32 defaultFocus)
+	{
+		s_agentDlgFocus = defaultFocus;
+		s_agentDlgIgnoreActivate = JTRUE;
+	}
+
+	static JBool agentMenu_handheldDlgActivatePressed()
+	{
+		if (s_agentDlgIgnoreActivate)
+		{
+			if (!TFE_Input::buttonDown(CONTROLLER_BUTTON_A))
+			{
+				s_agentDlgIgnoreActivate = JFALSE;
+			}
+			return JFALSE;
+		}
+		return menu_handheldActivatePressed();
+	}
+
+	static void agentMenu_handheldYesNoDlgNav()
+	{
+		if (menu_handheldNavPressed(MENU_NAV_LEFT) || menu_handheldNavPressed(MENU_NAV_UP))
+		{
+			s_agentDlgFocus = NEW_AGENT_NO;
+		}
+		else if (menu_handheldNavPressed(MENU_NAV_RIGHT) || menu_handheldNavPressed(MENU_NAV_DOWN))
+		{
+			s_agentDlgFocus = NEW_AGENT_YES;
+		}
+	}
 
 	static void agentMenu_handheldAdjustAgent(s32 delta)
 	{
@@ -126,6 +170,23 @@ namespace TFE_DarkForces
 		}
 		s_agentData[s_agentId].selectedMission = s_selectedMission + 1;
 		s_lastSelectedAgent = JFALSE;
+	}
+
+	static JBool agentMenu_isBottomFocus(s32 focus)
+	{
+		return focus >= AH_FOCUS_NEW && focus <= AH_FOCUS_BEGIN;
+	}
+
+	static void agentMenu_moveBottomFocus(s32 delta)
+	{
+		if (!agentMenu_isBottomFocus(s_agentHandheldFocus))
+		{
+			return;
+		}
+		s32 focus = s_agentHandheldFocus + delta;
+		if (focus < AH_FOCUS_NEW) { focus = AH_FOCUS_NEW; }
+		if (focus > AH_FOCUS_BEGIN) { focus = AH_FOCUS_BEGIN; }
+		s_agentHandheldFocus = focus;
 	}
 
 	///////////////////////////////////////////
@@ -292,22 +353,26 @@ namespace TFE_DarkForces
 			{
 				if (menu_handheldNavPressed(MENU_NAV_LEFT))
 				{
-					if (s_agentHandheldFocus == AH_FOCUS_MISSION)
+					if (agentMenu_isBottomFocus(s_agentHandheldFocus))
+					{
+						agentMenu_moveBottomFocus(-1);
+					}
+					else if (s_agentHandheldFocus == AH_FOCUS_MISSION)
 					{
 						s_agentHandheldFocus = AH_FOCUS_AGENT;
-					}
-					else if (s_agentHandheldFocus == AH_FOCUS_AGENT)
-					{
-						s_agentHandheldFocus = AH_FOCUS_BEGIN;
-					}
-					else
-					{
-						s_agentHandheldFocus = (s_agentHandheldFocus + AH_FOCUS_COUNT - 1) % AH_FOCUS_COUNT;
 					}
 				}
 				else if (menu_handheldNavPressed(MENU_NAV_RIGHT))
 				{
-					if (s_agentHandheldFocus == AH_FOCUS_AGENT)
+					if (agentMenu_isBottomFocus(s_agentHandheldFocus))
+					{
+						agentMenu_moveBottomFocus(1);
+					}
+					else if (s_agentCount <= 0)
+					{
+						s_agentHandheldFocus = AH_FOCUS_NEW;
+					}
+					else if (s_agentHandheldFocus == AH_FOCUS_AGENT)
 					{
 						s_agentHandheldFocus = AH_FOCUS_MISSION;
 					}
@@ -315,14 +380,14 @@ namespace TFE_DarkForces
 					{
 						s_agentHandheldFocus = AH_FOCUS_NEW;
 					}
-					else
-					{
-						s_agentHandheldFocus = (s_agentHandheldFocus + 1) % AH_FOCUS_COUNT;
-					}
 				}
 				else if (menu_handheldNavPressed(MENU_NAV_UP))
 				{
-					if (s_agentHandheldFocus == AH_FOCUS_AGENT)
+					if (agentMenu_isBottomFocus(s_agentHandheldFocus))
+					{
+						s_agentHandheldFocus = s_lastSelectedAgent ? AH_FOCUS_AGENT : AH_FOCUS_MISSION;
+					}
+					else if (s_agentHandheldFocus == AH_FOCUS_AGENT)
 					{
 						agentMenu_handheldAdjustAgent(-1);
 					}
@@ -330,24 +395,20 @@ namespace TFE_DarkForces
 					{
 						agentMenu_handheldAdjustMission(-1);
 					}
-					else
-					{
-						s_agentHandheldFocus = (s_agentHandheldFocus + AH_FOCUS_COUNT - 1) % AH_FOCUS_COUNT;
-					}
 				}
 				else if (menu_handheldNavPressed(MENU_NAV_DOWN))
 				{
-					if (s_agentHandheldFocus == AH_FOCUS_AGENT)
+					if (s_agentCount <= 0)
+					{
+						s_agentHandheldFocus = AH_FOCUS_NEW;
+					}
+					else if (s_agentHandheldFocus == AH_FOCUS_AGENT)
 					{
 						agentMenu_handheldAdjustAgent(1);
 					}
 					else if (s_agentHandheldFocus == AH_FOCUS_MISSION)
 					{
 						agentMenu_handheldAdjustMission(1);
-					}
-					else
-					{
-						s_agentHandheldFocus = (s_agentHandheldFocus + 1) % AH_FOCUS_COUNT;
 					}
 				}
 
@@ -463,15 +524,16 @@ namespace TFE_DarkForces
 					case AGENT_NEW:
 					{
 						s_newAgentDlg = JTRUE;
-						s_agentDlgFocus = NEW_AGENT_YES;
 						if (menu_isHandheld())
 						{
+							agentMenu_openHandheldDlg(NEW_AGENT_NO);
 							strncpy(s_newAgentName, "Kyle Katarn", sizeof(s_newAgentName) - 1);
 							s_newAgentName[sizeof(s_newAgentName) - 1] = 0;
 							s_editBox.cursor = (s32)strlen(s_newAgentName);
 						}
 						else
 						{
+							s_agentDlgFocus = NEW_AGENT_YES;
 							memset(s_newAgentName, 0, 32);
 							s_editBox.cursor = 0;
 						}
@@ -480,11 +542,25 @@ namespace TFE_DarkForces
 					} break;
 					case AGENT_REMOVE:
 						s_removeAgentDlg = JTRUE;
-						s_agentDlgFocus = NEW_AGENT_NO;
+						if (menu_isHandheld())
+						{
+							agentMenu_openHandheldDlg(NEW_AGENT_NO);
+						}
+						else
+						{
+							s_agentDlgFocus = NEW_AGENT_NO;
+						}
 						break;
 					case AGENT_EXIT:
 						s_quitConfirmDlg = JTRUE;
-						s_agentDlgFocus = NEW_AGENT_NO;
+						if (menu_isHandheld())
+						{
+							agentMenu_openHandheldDlg(NEW_AGENT_NO);
+						}
+						else
+						{
+							s_agentDlgFocus = NEW_AGENT_NO;
+						}
 						break;
 					case AGENT_BEGIN:
 						if (s_agentCount > 0 && s_selectedMission >= 0)
@@ -503,7 +579,7 @@ namespace TFE_DarkForces
 
 	void agentMenu_draw()
 	{
-		s_framebuffer = vfb_getCpuBuffer();
+		s_framebuffer = menu_shouldUseClassicDrawBuffer() ? menu_getClassicDrawBuffer() : vfb_getCpuBuffer();
 		memset(s_framebuffer, 0, 320 * 200);
 		blitDeltaFrame(&s_agentMenuFrames[0], 0, 0, s_framebuffer);
 		
@@ -618,7 +694,15 @@ namespace TFE_DarkForces
 
 	void agentMenu_startupDisplay()
 	{
+		u32 panelWidth = 0;
+		u32 panelHeight = 0;
+		const bool restorePanel = menu_saveHandheldPanelVfb(&panelWidth, &panelHeight);
 		s_framebuffer = menu_startupDisplay();
+		if (restorePanel)
+		{
+			menu_applyHandheldPanelVfb(panelWidth, panelHeight);
+			s_framebuffer = menu_getClassicDrawBuffer();
+		}
 		menu_resetCursor();
 		if (s_agentLpalette)
 		{
@@ -671,7 +755,7 @@ namespace TFE_DarkForces
 		}
 
 		s_missionBegin = JFALSE;
-		s_agentHandheldFocus = AH_FOCUS_AGENT;
+		agentMenu_setHandheldFocusForAgentCount();
 	}
 
 	void agentMenu_setAgentName(const char* name)
@@ -712,6 +796,11 @@ namespace TFE_DarkForces
 			agent_createNewAgent(s_agentId, &s_agentData[s_agentId], s_newAgentName);
 
 			s_selectedMission = 0;
+			if (menu_isHandheld())
+			{
+				s_agentHandheldFocus = AH_FOCUS_BEGIN;
+				s_lastSelectedAgent = JTRUE;
+			}
 		}
 	}
 
@@ -731,6 +820,10 @@ namespace TFE_DarkForces
 		
 		s_agentId = s_agentCount > 0 ? 0 : -1;
 		s_selectedMission = s_agentCount > 0 ? s_agentData[0].selectedMission : 0;
+		if (menu_isHandheld())
+		{
+			agentMenu_setHandheldFocusForAgentCount();
+		}
 	}
 
 	// UI routines.
@@ -766,15 +859,7 @@ namespace TFE_DarkForces
 
 		if (menu_isHandheld())
 		{
-			s_agentDlgFocus = NEW_AGENT_YES;
-			if (menu_handheldNavPressed(MENU_NAV_LEFT))
-			{
-				s_agentDlgFocus = NEW_AGENT_NO;
-			}
-			else if (menu_handheldNavPressed(MENU_NAV_RIGHT))
-			{
-				s_agentDlgFocus = NEW_AGENT_YES;
-			}
+			agentMenu_handheldYesNoDlgNav();
 
 			s_buttonPressed = s_agentDlgFocus;
 			s_buttonHover = JTRUE;
@@ -784,7 +869,7 @@ namespace TFE_DarkForces
 				s_newAgentDlg = JFALSE;
 				return;
 			}
-			if (menu_handheldActivatePressed())
+			if (agentMenu_handheldDlgActivatePressed())
 			{
 				if (s_agentDlgFocus == NEW_AGENT_YES)
 				{
@@ -856,14 +941,7 @@ namespace TFE_DarkForces
 	{
 		if (menu_isHandheld())
 		{
-			if (menu_handheldNavPressed(MENU_NAV_LEFT))
-			{
-				s_agentDlgFocus = NEW_AGENT_NO;
-			}
-			else if (menu_handheldNavPressed(MENU_NAV_RIGHT))
-			{
-				s_agentDlgFocus = NEW_AGENT_YES;
-			}
+			agentMenu_handheldYesNoDlgNav();
 
 			s_buttonPressed = s_agentDlgFocus;
 			s_buttonHover = JTRUE;
@@ -873,7 +951,7 @@ namespace TFE_DarkForces
 				s_removeAgentDlg = false;
 				return;
 			}
-			if (menu_handheldActivatePressed())
+			if (agentMenu_handheldDlgActivatePressed())
 			{
 				if (s_agentDlgFocus == NEW_AGENT_YES)
 				{
@@ -949,14 +1027,7 @@ namespace TFE_DarkForces
 
 		if (menu_isHandheld())
 		{
-			if (menu_handheldNavPressed(MENU_NAV_LEFT))
-			{
-				s_agentDlgFocus = NEW_AGENT_NO;
-			}
-			else if (menu_handheldNavPressed(MENU_NAV_RIGHT))
-			{
-				s_agentDlgFocus = NEW_AGENT_YES;
-			}
+			agentMenu_handheldYesNoDlgNav();
 
 			s_buttonPressed = s_agentDlgFocus;
 			s_buttonHover = JTRUE;
@@ -966,7 +1037,7 @@ namespace TFE_DarkForces
 				s_quitConfirmDlg = JFALSE;
 				return JFALSE;
 			}
-			if (menu_handheldActivatePressed())
+			if (agentMenu_handheldDlgActivatePressed())
 			{
 				s_quitConfirmDlg = JFALSE;
 				return s_agentDlgFocus == NEW_AGENT_YES ? JTRUE : JFALSE;

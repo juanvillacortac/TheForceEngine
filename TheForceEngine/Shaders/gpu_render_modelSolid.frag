@@ -94,7 +94,7 @@ void main()
 	// Vertex-lit.
 	if (Frag_TextureMode == 0)
 	{
-		float dither = float(int(gl_FragCoord.x) + int(gl_FragCoord.y) & 1);
+		float dither = float(TFE_FTOI(gl_FragCoord.x) + TFE_FTOI(gl_FragCoord.y) & 1);
 	#ifdef OPT_COLORMAP_INTERP // Smooth out the attenuation.
 		light = Frag_Light;
 	#else // Apply dithering like the original.

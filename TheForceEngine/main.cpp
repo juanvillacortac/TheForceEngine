@@ -172,7 +172,7 @@ void handleEvent(SDL_Event& Event)
 			else if (Event.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTY)
 			{ TFE_Input::setAxis(AXIS_RIGHT_Y, -f32(Event.caxis.value) / 32768.0f); }
 
-			const s32 deadzone = 3200;
+			const s32 deadzone = tfe_UseHandheld() ? 3840 : 3200;
 			if ((Event.caxis.value < -deadzone) || (Event.caxis.value > deadzone))
 			{
 				if (Event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT)
@@ -633,9 +633,16 @@ int main(int argc, char* argv[])
 
 	TFE_FrontEndUI::initConsole();
 
-	if (tfe_UseHandheld() && (firstRun || TFE_FrontEndUI::needsHandheldPortDefaults()))
+	if (tfe_UseHandheld())
 	{
-		TFE_FrontEndUI::applyHandheldPortDefaults();
+		const bool needsDefaults = TFE_FrontEndUI::needsHandheldPortDefaults();
+		if (firstRun || needsDefaults)
+		{
+			TFE_System::logWrite(LOG_MSG, "Handheld",
+				"Applying handheld port defaults (%s).",
+				firstRun ? "first run" : "game resolution still 320x200");
+			TFE_FrontEndUI::applyHandheldPortDefaults();
+		}
 	}
 
 	// Mali and similar GLES drivers may lack fragment texture-buffer support required by the GPU renderer.
@@ -845,7 +852,8 @@ int main(int argc, char* argv[])
 			}
 
 			bool toggleSystemMenu = systemMenuKeyCombo();
-			if (TFE_FrontEndUI::isConfigMenuOpen() && (toggleSystemMenu || TFE_Input::keyPressed(KEY_ESCAPE)))
+			if (TFE_FrontEndUI::isConfigMenuOpen() && (toggleSystemMenu || TFE_Input::keyPressed(KEY_ESCAPE)
+				|| (TFE_Ui::isHandheld() && TFE_Input::buttonPressed(CONTROLLER_BUTTON_B))))
 			{
 				// "Eat" the escape key so it doesn't also open the Escape menu.
 				TFE_Input::clearKeyPressed(KEY_ESCAPE);
@@ -1034,6 +1042,12 @@ int main(int argc, char* argv[])
 	game_destroy();
 	reticle_destroy();
 	inputMapping_shutdown();
+
+	// Wayland: release pointer grab before GPU teardown (can crash Hyprland otherwise).
+	SDL_SetRelativeMouseMode(SDL_FALSE);
+	SDL_ShowCursor(SDL_ENABLE);
+	SDL_Event drainEvent;
+	while (SDL_PollEvent(&drainEvent)) { }
 
 	// Cleanup
 	TFE_FrontEndUI::shutdown();

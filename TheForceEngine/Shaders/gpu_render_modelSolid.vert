@@ -92,7 +92,7 @@ void main()
 	// Lighting
 	float ambient = max(0.0, LightData.y > 32.0 ? LightData.y - 64.0 : LightData.y);
 	float light = 0.0;
-	int textureMode = int(vtx_color.w * 255.0 + 0.5);
+	int textureMode = TFE_FTOI(vtx_color.w * 255.0 + 0.5);
 	bool vertexLighting = (textureMode == 0);
 	if (vertexLighting)
 	{
@@ -132,7 +132,7 @@ void main()
 	Frag_ModelY = ModelPos.y;
 	Frag_WorldPos = worldPos;
 #ifdef OPT_TRUE_COLOR
-	int palIndex = int(vtx_color.x * 255.0 + 0.5);
+	int palIndex = TFE_FTOI(vtx_color.x * 255.0 + 0.5);
 	Frag_Color = texelFetch(BasePalette, ivec2(palIndex, 0), 0);
 	if (palIndex > 0 && palIndex < 32)
 	{
@@ -143,9 +143,9 @@ void main()
 		Frag_Color.a = 0.5;
 	}
 #else
-	Frag_Color = int(vtx_color.x * 255.0 + 0.5);
+	Frag_Color = TFE_FTOI(vtx_color.x * 255.0 + 0.5);
 #endif
 	Frag_Light = vertexLighting ? light : ambient;
-	Frag_TextureId = int(floor(vtx_color.y * 255.0 + 0.5) + floor(vtx_color.z * 255.0 + 0.5)*256.0 + 0.5);
+	Frag_TextureId = TFE_FTOI(floor(vtx_color.y * 255.0 + 0.5) + floor(vtx_color.z * 255.0 + 0.5)*256.0 + 0.5);
 	Frag_TextureMode = textureMode;
 }

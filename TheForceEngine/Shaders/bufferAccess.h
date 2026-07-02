@@ -1,6 +1,30 @@
 #ifndef TFE_BUFFER_ACCESS_INCLUDED
 #define TFE_BUFFER_ACCESS_INCLUDED
 
+// Bifrost GLES (Mali-G31/G51/G52): scalar int(float) triggers llvm.bifrost.fptosi.tz and
+// aborts the driver shader compiler. Use uint(floor()) for positive values instead.
+#ifndef TFE_FTOI
+#ifdef TFE_BUFFER_TEXTURE_BYTES
+// Match GLSL int(float) / ivec2(vec2): truncate toward zero, without llvm.bifrost.fptosi.tz.
+highp int tfe_ftoi(highp float x)
+{
+	if (x >= 0.0)
+		return int(uint(floor(x + 0.0001)));
+	return -int(uint(floor(-x + 0.0001)));
+}
+
+highp ivec2 tfe_ftoi2(highp vec2 v)
+{
+	return ivec2(tfe_ftoi(v.x), tfe_ftoi(v.y));
+}
+#else
+#define tfe_ftoi(x) int(x)
+#define tfe_ftoi2(v) ivec2(v)
+#endif
+#define TFE_FTOI(x) tfe_ftoi(x)
+#define TFE_FTOI2(v) tfe_ftoi2(v)
+#endif
+
 // Desktop GL: samplerBuffer / isamplerBuffer / usamplerBuffer (unchanged).
 // GLES Mali fallback (TFE_BUFFER_TEXTURE_2D): buffer data in a 2D texture.
 // Integer and float buffers both use GL_RGBA8 byte layout (TFE_BUFFER_TEXTURE_BYTES)
@@ -21,20 +45,19 @@ ivec2 tfe_bufCoord(int index)
 
 #ifdef TFE_BUFFER_TEXTURE_BYTES
 
-int tfe_loadInt32(highp sampler2D buf, int byteOff)
+uint tfe_loadUint32(highp sampler2D buf, int byteOff)
 {
 	int texIdx = byteOff >> 2;
 	vec4 t = texelFetch(buf, tfe_bufCoord(texIdx), 0);
-	int b0 = int(t.r * 255.0 + 0.5);
-	int b1 = int(t.g * 255.0 + 0.5);
-	int b2 = int(t.b * 255.0 + 0.5);
-	int b3 = int(t.a * 255.0 + 0.5);
-	return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+	// Bifrost (Mali-G31 etc.): scalar int(float) triggers llvm.bifrost.fptosi.tz compiler crash.
+	// Vector uvec4 cast avoids the broken intrinsic path.
+	uvec4 b = uvec4(t * 255.0 + 0.5);
+	return b.x | (b.y << 8u) | (b.z << 16u) | (b.w << 24u);
 }
 
-uint tfe_loadUint32(highp sampler2D buf, int byteOff)
+int tfe_loadInt32(highp sampler2D buf, int byteOff)
 {
-	return uint(tfe_loadInt32(buf, byteOff));
+	return int(tfe_loadUint32(buf, byteOff));
 }
 
 float tfe_loadFloat32(highp sampler2D buf, int byteOff)
@@ -111,6 +134,11 @@ vec4 tfe_fetchFBuffer(samplerBuffer buf, int index)
 }
 
 ivec4 tfe_fetchIBuffer(isamplerBuffer buf, int index)
+{
+	return texelFetch(buf, index);
+}
+
+ivec4 tfe_fetchIBuffer8(isamplerBuffer buf, int index)
 {
 	return texelFetch(buf, index);
 }

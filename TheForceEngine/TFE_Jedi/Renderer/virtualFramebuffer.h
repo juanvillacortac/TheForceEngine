@@ -75,6 +75,12 @@ namespace TFE_Jedi
 	// Get the valid screen rect for the current mode.
 	ScreenRect* vfb_getScreenRect(ScreenRectType type);
 	void vfb_getResolution(u32* width, u32* height);
+	bool vfb_shouldLetterboxClassicUi();
+	bool vfb_useSquareHandheldPanel();
+	void vfb_getClassicUiDrawSize(s32 bufferWidth, s32 bufferHeight, s32* drawWidth, s32* drawHeight);
+	void vfb_setStretchGameplayPresent(bool stretch);
+	// True when 320x200 classic UI was letterboxed into a square panel-sized buffer this frame.
+	void vfb_setClassicUiLetterboxedPresent(bool letterboxed);
 	// Returns the stride for rendering stride
 	u32 vfb_getStride();
 }  // namespace TFE_Jedi

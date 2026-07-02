@@ -37,9 +37,13 @@ TFE_GL_Backend tfe_PreferGLBackend()
 		return TFE_GL_BACKEND_GLES;
 	if (tfe_parse_force_env("TFE_FORCE_GL"))
 		return TFE_GL_BACKEND_DESKTOP;
-	if (tfe_IsLinuxKmsDisplay() || tfe_parse_handheld_env())
+	if (tfe_IsLinuxKmsDisplay())
 		return TFE_GL_BACKEND_GLES;
+#if defined(__aarch64__)
+	return TFE_GL_BACKEND_GLES;
+#else
 	return TFE_GL_BACKEND_DESKTOP;
+#endif
 #else
 	return TFE_GL_BACKEND_DESKTOP;
 #endif
@@ -62,6 +66,11 @@ int tfe_UseGLES()
 int tfe_UseHandheld()
 {
 	return tfe_parse_handheld_env();
+}
+
+int tfe_UseHandheldNoSticks()
+{
+	return tfe_UseHandheld() && tfe_parse_force_env("TFE_HANDHELD_NO_STICKS");
 }
 
 void tfe_InitGLBackendFromContext()

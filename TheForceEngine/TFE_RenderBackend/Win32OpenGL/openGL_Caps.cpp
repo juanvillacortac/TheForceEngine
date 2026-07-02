@@ -3,6 +3,7 @@
 #include "gl.h"
 #include <assert.h>
 #include <algorithm>
+#include <cstring>
 #include <SDL.h>
 #include <TFE_System/system.h>
 #include <TFE_Settings/linux/tfe_gl_backend.h>
@@ -103,8 +104,18 @@ namespace OpenGL_Caps
 				m_textureBufferMaxSize = maxTexSize * 1024;
 				if (m_textureBufferMaxSize >= GLSPEC_MAX_TEXTURE_BUFFER_SIZE_MIN)
 				{
-					m_deviceTier = DEV_TIER_2;
-					TFE_System::logWrite(LOG_MSG, "GLES", "GPU renderer using 2D texture buffer emulation.");
+					if (tfe_GLESBifrostSectorShadersOK())
+					{
+						m_deviceTier = DEV_TIER_2;
+						TFE_System::logWrite(LOG_MSG, "GLES",
+							"GPU renderer using 2D texture buffer emulation.");
+					}
+					else
+					{
+						m_deviceTier = DEV_TIER_1;
+						TFE_System::logWrite(LOG_WARNING, "GLES",
+							"Buffer2D sector shader probe failed on this GPU; using software renderer.");
+					}
 				}
 			}
 			else if (gl_maj >= 3 && (m_supportFlags & (CAP_VBO | CAP_FBO | CAP_PBO)) == (CAP_VBO | CAP_FBO | CAP_PBO))

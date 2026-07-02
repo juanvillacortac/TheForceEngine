@@ -4,6 +4,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <TFE_System/types.h>
+#include <TFE_Jedi/Math/fixedPoint.h>
 #include <TFE_DarkForces/Landru/lrect.h>
 
 namespace TFE_DarkForces
@@ -45,6 +46,13 @@ namespace TFE_DarkForces
 	// If null, the Landru bitmap will be used.
 	void menu_blitToScreen(u8* framebuffer = nullptr, JBool transparent = JFALSE, JBool swap = JTRUE);
 	void menu_blitCursorScaled(s16 x, s16 y, u8* buffer);
+	// Map 320x200 classic UI assets into the handheld 4:3 zone (square panel letterbox).
+	void menu_getClassicUiBlitTransform(s32* xOffset, s32* yOffset, TFE_Jedi::fixed16_16* xScale, TFE_Jedi::fixed16_16* yScale);
+	// Handheld square panel: save panel vfb size, draw at 320x200, restore panel vfb for upscale present.
+	bool menu_saveHandheldPanelVfb(u32* outWidth, u32* outHeight);
+	void menu_applyHandheldPanelVfb(u32 panelWidth, u32 panelHeight);
+	u8*  menu_getClassicDrawBuffer();
+	bool menu_shouldUseClassicDrawBuffer();
 	   
 	// Variables.
 	extern Vec2i s_cursorPos;

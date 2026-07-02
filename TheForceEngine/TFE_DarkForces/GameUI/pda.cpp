@@ -2,6 +2,7 @@
 #include "pda.h"
 #include "menu.h"
 #include "missionBriefing.h"
+#include <TFE_DarkForces/mission.h>
 #include <TFE_DarkForces/Landru/lactorDelt.h>
 #include <TFE_DarkForces/Landru/lactorAnim.h>
 #include <TFE_DarkForces/Landru/lpalette.h>
@@ -239,12 +240,20 @@ namespace TFE_DarkForces
 		
 	void pda_close()
 	{
-		// Clear the screen to black during the palette transition.
-		pda_clearToBlack();
+		// Clear the framebuffer only; restoring the level palette happens below.
+		u32 outWidth, outHeight;
+		vfb_getResolution(&outWidth, &outHeight);
+		memset(vfb_getCpuBuffer(), 0, outWidth * outHeight);
 
 		// Reset automap
 		automap_updateMapData(MAP_ENABLE_AUTOCENTER);
 		s_pdaOpen = JFALSE;
+
+		if (menu_isHandheld())
+		{
+			inputMapping_consumeControllerButton(CONTROLLER_BUTTON_A);
+			inputMapping_consumeControllerButton(CONTROLLER_BUTTON_B);
+		}
 
 		// TFE
 		reticle_enable(true);
@@ -257,6 +266,9 @@ namespace TFE_DarkForces
 			TFE_Jedi::renderer_setLimits();
 		}
 
+		// Restore the gameplay palette (matches escape-menu unpause path).
+		menu_setPaletteFromPltt(s_basePalette);
+		menu_setPaletteFromPltt(s_basePalette);
 	}
 			
 	void pda_update()
@@ -271,6 +283,8 @@ namespace TFE_DarkForces
 			|| TFE_Input::keyPressed(KEY_ESCAPE) 
 			|| inputMapping_getAction(IADF_MENU_TOGGLE) == STATE_PRESSED)
 		{
+			inputMapping_removeState(IADF_PDA_TOGGLE);
+			inputMapping_removeState(IADF_MENU_TOGGLE);
 			pda_close();
 			return;
 		}
@@ -334,6 +348,7 @@ namespace TFE_DarkForces
 		// show up incorrectly.
 		screenDraw_setTransColor(0);
 		menu_blitCursorScaled(s_cursorPos.x, s_cursorPos.z, vfb_getCpuBuffer());
+		vfb_setStretchGameplayPresent(false);
 		vfb_swap();
 	}
 	

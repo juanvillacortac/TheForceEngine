@@ -40,6 +40,8 @@ namespace TFE_DarkForces
 	JBool s_buttonHover = JFALSE;
 	static JBool s_gamepadClickPressed = JFALSE;
 	static JBool s_gamepadClickDown = JFALSE;
+	static u8 s_classicDrawBuffer[320 * 200];
+	static bool s_useClassicDrawBuffer = false;
 	static f32 s_navStickX = 0.0f;
 	static f32 s_navStickY = 0.0f;
 	static f32 s_prevNavStickX = 0.0f;
@@ -136,9 +138,9 @@ namespace TFE_DarkForces
 		switch (dir)
 		{
 		case MENU_NAV_UP:
-			return TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_UP) || navStickHeld(s_navStickY, false) ? JTRUE : JFALSE;
+			return TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_UP) || navStickHeld(s_navStickY, true) ? JTRUE : JFALSE;
 		case MENU_NAV_DOWN:
-			return TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_DOWN) || navStickHeld(s_navStickY, true) ? JTRUE : JFALSE;
+			return TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_DOWN) || navStickHeld(s_navStickY, false) ? JTRUE : JFALSE;
 		case MENU_NAV_LEFT:
 			return TFE_Input::buttonDown(CONTROLLER_BUTTON_DPAD_LEFT) || navStickHeld(s_navStickX, false) ? JTRUE : JFALSE;
 		case MENU_NAV_RIGHT:
@@ -158,9 +160,9 @@ namespace TFE_DarkForces
 		switch (dir)
 		{
 		case MENU_NAV_UP:
-			return TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_UP) || navStickCrossed(s_navStickY, s_prevNavStickY, false) ? JTRUE : JFALSE;
+			return TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_UP) || navStickCrossed(s_navStickY, s_prevNavStickY, true) ? JTRUE : JFALSE;
 		case MENU_NAV_DOWN:
-			return TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_DOWN) || navStickCrossed(s_navStickY, s_prevNavStickY, true) ? JTRUE : JFALSE;
+			return TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_DOWN) || navStickCrossed(s_navStickY, s_prevNavStickY, false) ? JTRUE : JFALSE;
 		case MENU_NAV_LEFT:
 			return TFE_Input::buttonPressed(CONTROLLER_BUTTON_DPAD_LEFT) || navStickCrossed(s_navStickX, s_prevNavStickX, false) ? JTRUE : JFALSE;
 		case MENU_NAV_RIGHT:
@@ -293,6 +295,7 @@ namespace TFE_DarkForces
 
 	u8* menu_startupDisplay()
 	{
+		s_useClassicDrawBuffer = false;
 		vfb_setMode(VFB_TEXTURE);
 		vfb_setResolution(320, 200);
 		return vfb_getCpuBuffer();
@@ -329,6 +332,70 @@ namespace TFE_DarkForces
 		TFE_Paths::removeLastArchive();
 	}
 
+	void menu_getClassicUiBlitTransform(s32* xOffset, s32* yOffset, fixed16_16* xScale, fixed16_16* yScale)
+	{
+		ScreenRect* uiRect = vfb_getScreenRect(VFB_RECT_UI);
+		const s32 bufferWidth = uiRect->right - uiRect->left + 1;
+		const s32 bufferHeight = uiRect->bot - uiRect->top + 1;
+
+		if (bufferWidth == 320 && bufferHeight == 200)
+		{
+			*xOffset = 0;
+			*yOffset = 0;
+			*xScale = ONE_16;
+			*yScale = ONE_16;
+			return;
+		}
+
+		s32 drawWidth = bufferWidth;
+		s32 drawHeight = bufferHeight;
+		vfb_getClassicUiDrawSize(bufferWidth, bufferHeight, &drawWidth, &drawHeight);
+		*yOffset = (bufferHeight - drawHeight) / 2;
+
+		*yScale = div16(intToFixed16(drawHeight), intToFixed16(200));
+		*xScale = div16(*yScale, 78643);
+
+		const s32 virtualWidth = floor16(mul16(intToFixed16(320), *xScale));
+		*xOffset = max(0, (drawWidth - virtualWidth) / 2);
+	}
+
+	bool menu_saveHandheldPanelVfb(u32* outWidth, u32* outHeight)
+	{
+		*outWidth = 0;
+		*outHeight = 0;
+		if (!vfb_useSquareHandheldPanel())
+		{
+			return false;
+		}
+
+		vfb_getResolution(outWidth, outHeight);
+		return *outWidth > 320 || *outHeight > 200;
+	}
+
+	void menu_applyHandheldPanelVfb(u32 panelWidth, u32 panelHeight)
+	{
+		if (panelWidth > 320 || panelHeight > 200)
+		{
+			vfb_setMode(VFB_TEXTURE);
+			vfb_setResolution(panelWidth, panelHeight);
+			s_useClassicDrawBuffer = true;
+		}
+		else
+		{
+			s_useClassicDrawBuffer = false;
+		}
+	}
+
+	u8* menu_getClassicDrawBuffer()
+	{
+		return s_classicDrawBuffer;
+	}
+
+	bool menu_shouldUseClassicDrawBuffer()
+	{
+		return s_useClassicDrawBuffer;
+	}
+
 	void menu_blitToScreen(u8* framebuffer/*=nullptr*/, JBool transparent/*=JFALSE*/, JBool swap/*=JTRUE*/)
 	{
 		u32 outWidth, outHeight;
@@ -360,6 +427,7 @@ namespace TFE_DarkForces
 				// This is a straight copy - best for performance since the GPU can do the upscale.
 				memcpy(vfb_getCpuBuffer(), framebuffer, 320 * 200);
 			}
+			vfb_setClassicUiLetterboxedPresent(false);
 		}
 		else
 		{
@@ -374,18 +442,20 @@ namespace TFE_DarkForces
 				JFALSE,
 			};
 			ScreenRect* uiRect = vfb_getScreenRect(VFB_RECT_UI);
-			fixed16_16 xScale = vfb_getXScale();
-			fixed16_16 yScale = vfb_getYScale();
+			s32 offset = 0;
+			s32 offsetY = 0;
+			fixed16_16 xScale = ONE_16;
+			fixed16_16 yScale = ONE_16;
+			menu_getClassicUiBlitTransform(&offset, &offsetY, &xScale, &yScale);
 
-			s32 virtualWidth = floor16(mul16(intToFixed16(320), xScale));
-			s32 offset = max(0, ((uiRect->right - uiRect->left + 1) - virtualWidth) / 2);
-			
 			if (!transparent)
 			{
 				memset(vfb_getCpuBuffer(), 0, outWidth * outHeight);
 			}
-			blitTextureToScreenScaled(&canvas, (DrawRect*)uiRect, offset, 0, xScale, yScale, vfb_getCpuBuffer());
+			blitTextureToScreenScaled(&canvas, (DrawRect*)uiRect, offset, offsetY, xScale, yScale, vfb_getCpuBuffer());
+			vfb_setClassicUiLetterboxedPresent(vfb_useSquareHandheldPanel());
 		}
+		vfb_setStretchGameplayPresent(false);
 		if (swap) { vfb_swap(); }
 	}
 
@@ -395,15 +465,14 @@ namespace TFE_DarkForces
 		{
 			return;
 		}
-		ScreenRect* uiRect = vfb_getScreenRect(VFB_RECT_UI);
-		fixed16_16 xScale = vfb_getXScale();
-		fixed16_16 yScale = vfb_getYScale();
+		s32 offset = 0;
+		s32 offsetY = 0;
+		fixed16_16 xScale = ONE_16;
+		fixed16_16 yScale = ONE_16;
+		menu_getClassicUiBlitTransform(&offset, &offsetY, &xScale, &yScale);
 
-		s32 virtualWidth = floor16(mul16(intToFixed16(320), xScale));
-		s32 offset = max(0, ((uiRect->right - uiRect->left + 1) - virtualWidth) / 2);
-
-		x = floor16(mul16(intToFixed16(x), xScale)) + offset;
-		y = floor16(mul16(intToFixed16(y), yScale));
+		x = s16(floor16(mul16(intToFixed16(x), xScale)) + offset);
+		y = s16(floor16(mul16(intToFixed16(y), yScale)) + offsetY);
 
 		blitDeltaFrameScaled(&s_cursor, x, y, xScale, yScale, buffer);
 	}

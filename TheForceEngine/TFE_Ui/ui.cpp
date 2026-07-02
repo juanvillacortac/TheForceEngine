@@ -11,6 +11,7 @@
 #include "portable-file-dialogs.h"
 #include "markdown.h"
 #include <TFE_Input/input.h>
+#include <TFE_Input/inputMapping.h>
 #include <SDL.h>
 #include <cmath>
 #include <cstdlib>
@@ -22,6 +23,9 @@ namespace TFE_Ui
 const char* glsl_version = nullptr;
 static s32 s_uiScale = 100;
 static bool s_guiFrameActive;
+static bool s_handheldConfigActive = false;
+static ImVec2 s_virtMousePos = ImVec2(-1.0f, -1.0f);
+static f32 s_virtMouseActiveTimer = 0.0f;
 
 bool isHandheld()
 {
@@ -63,27 +67,175 @@ static void feedHandheldGamepad()
 	key(ImGuiKey_GamepadL3, CONTROLLER_BUTTON_LEFTSTICK);
 	key(ImGuiKey_GamepadR3, CONTROLLER_BUTTON_RIGHTSTICK);
 
-	const f32 deadzone = 0.2f;
+	const InputConfig* input = inputMapping_get();
+	const f32 leftDeadzone = input ? input->ctrlDeadzone[0] : 0.12f;
+	const f32 rightDeadzone = input ? input->ctrlDeadzone[1] : 0.12f;
 	const f32 lx = getAxis(AXIS_LEFT_X);
 	const f32 ly = getAxis(AXIS_LEFT_Y);
 	const f32 rx = getAxis(AXIS_RIGHT_X);
 	const f32 ry = getAxis(AXIS_RIGHT_Y);
 
-	auto stick = [&io, deadzone](ImGuiKey negKey, ImGuiKey posKey, f32 value)
+	auto stick = [&io](ImGuiKey negKey, ImGuiKey posKey, f32 value, f32 deadzone)
 	{
 		io.AddKeyAnalogEvent(negKey, value < -deadzone, value < -deadzone ? -value : 0.0f);
 		io.AddKeyAnalogEvent(posKey, value > deadzone, value > deadzone ? value : 0.0f);
 	};
 
-	stick(ImGuiKey_GamepadLStickLeft, ImGuiKey_GamepadLStickRight, lx);
-	stick(ImGuiKey_GamepadLStickUp, ImGuiKey_GamepadLStickDown, ly);
-	stick(ImGuiKey_GamepadRStickLeft, ImGuiKey_GamepadRStickRight, rx);
-	stick(ImGuiKey_GamepadRStickUp, ImGuiKey_GamepadRStickDown, ry);
+	stick(ImGuiKey_GamepadLStickLeft, ImGuiKey_GamepadLStickRight, lx, leftDeadzone);
+	stick(ImGuiKey_GamepadLStickUp, ImGuiKey_GamepadLStickDown, -ly, leftDeadzone);
+	stick(ImGuiKey_GamepadRStickLeft, ImGuiKey_GamepadRStickRight, rx, rightDeadzone);
+	stick(ImGuiKey_GamepadRStickUp, ImGuiKey_GamepadRStickDown, -ry, rightDeadzone);
 
+	const f32 triggerDeadzone = 0.12f;
 	const f32 lt = getAxis(AXIS_LEFT_TRIGGER);
 	const f32 rt = getAxis(AXIS_RIGHT_TRIGGER);
-	io.AddKeyAnalogEvent(ImGuiKey_GamepadL2, lt > 0.1f, lt);
-	io.AddKeyAnalogEvent(ImGuiKey_GamepadR2, rt > 0.1f, rt);
+	io.AddKeyAnalogEvent(ImGuiKey_GamepadL2, lt > triggerDeadzone, lt);
+	io.AddKeyAnalogEvent(ImGuiKey_GamepadR2, rt > triggerDeadzone, rt);
+}
+
+static void feedHandheldVirtualMouse()
+{
+	if (!s_handheldConfigActive)
+	{
+		return;
+	}
+
+	ImGuiIO& io = ImGui::GetIO();
+	if (s_virtMousePos.x < 0.0f)
+	{
+		s_virtMousePos = ImVec2(io.DisplaySize.x * 0.62f, io.DisplaySize.y * 0.38f);
+	}
+
+	const f32 rx = getAxis(AXIS_RIGHT_X);
+	const f32 ry = getAxis(AXIS_RIGHT_Y);
+	const InputConfig* input = inputMapping_get();
+	const f32 deadzone = input ? input->ctrlDeadzone[1] : 0.12f;
+	const f32 speed = 360.0f * io.DeltaTime;
+
+	auto applyStickAxis = [deadzone](f32 value) -> f32
+	{
+		if (fabsf(value) <= deadzone)
+		{
+			return 0.0f;
+		}
+		const f32 sign = value < 0.0f ? -1.0f : 1.0f;
+		return sign * (fabsf(value) - deadzone) / (1.0f - deadzone);
+	};
+
+	const f32 adjRx = applyStickAxis(rx);
+	const f32 adjRy = applyStickAxis(ry);
+	const bool stickActive = adjRx != 0.0f || adjRy != 0.0f;
+	if (stickActive)
+	{
+		s_virtMouseActiveTimer = 0.45f;
+		if (adjRx != 0.0f)
+		{
+			s_virtMousePos.x += adjRx * speed;
+		}
+		if (adjRy != 0.0f)
+		{
+			s_virtMousePos.y -= adjRy * speed;
+		}
+	}
+	else if (s_virtMouseActiveTimer > 0.0f)
+	{
+		s_virtMouseActiveTimer -= io.DeltaTime;
+		if (s_virtMouseActiveTimer < 0.0f)
+		{
+			s_virtMouseActiveTimer = 0.0f;
+		}
+	}
+
+	s_virtMousePos.x = std::max(0.0f, std::min(s_virtMousePos.x, io.DisplaySize.x - 1.0f));
+	s_virtMousePos.y = std::max(0.0f, std::min(s_virtMousePos.y, io.DisplaySize.y - 1.0f));
+
+	io.AddMouseSourceEvent(ImGuiMouseSource_Mouse);
+	io.AddMousePosEvent(s_virtMousePos.x, s_virtMousePos.y);
+
+	// A is also ImGui gamepad "FaceDown" for keyboard focus nav. Only mirror it as a
+	// mouse click when using the right-stick cursor; otherwise D-pad focus + A gets
+	// stolen by whatever sits under the virtual pointer (often the settings panel).
+	const bool virtCursorMode = s_virtMouseActiveTimer > 0.0f;
+	const bool navActive = (io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) != 0
+		&& io.NavActive;
+	const bool clickAsMouse = buttonDown(CONTROLLER_BUTTON_A)
+		&& (virtCursorMode || (!navActive && ImGui::IsAnyItemHovered()));
+
+	io.AddMouseButtonEvent(0, clickAsMouse);
+	io.MouseDrawCursor = virtCursorMode;
+}
+
+static void releaseHandheldImGuiInput()
+{
+	if (!isGuiFrameActive())
+	{
+		return;
+	}
+
+	ImGuiIO& io = ImGui::GetIO();
+	io.AddMouseButtonEvent(0, false);
+	io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false);
+	io.AddKeyEvent(ImGuiKey_GamepadFaceRight, false);
+	io.AddKeyEvent(ImGuiKey_GamepadFaceLeft, false);
+	io.AddKeyEvent(ImGuiKey_GamepadFaceUp, false);
+	io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, false);
+	io.AddKeyEvent(ImGuiKey_GamepadDpadRight, false);
+	io.AddKeyEvent(ImGuiKey_GamepadDpadUp, false);
+	io.AddKeyEvent(ImGuiKey_GamepadDpadDown, false);
+	io.MouseDrawCursor = false;
+}
+
+bool handheldItemConfirm()
+{
+	if (!isHandheld() || !buttonPressed(CONTROLLER_BUTTON_A))
+	{
+		return false;
+	}
+	return ImGui::IsItemFocused() || ImGui::IsItemHovered();
+}
+
+void setHandheldConfigMenuActive(bool active)
+{
+	if (s_handheldConfigActive == active)
+	{
+		return;
+	}
+	s_handheldConfigActive = active;
+	if (active)
+	{
+		resetHandheldVirtualMousePos();
+		SDL_ShowCursor(SDL_DISABLE);
+	}
+	else
+	{
+		releaseHandheldImGuiInput();
+		inputMapping_consumeControllerButton(CONTROLLER_BUTTON_A);
+		inputMapping_consumeControllerButton(CONTROLLER_BUTTON_B);
+		clearMouseButtonPressed(MBUTTON_LEFT);
+		resetHandheldVirtualMousePos();
+		SDL_ShowCursor(SDL_ENABLE);
+	}
+}
+
+bool isHandheldConfigMenuActive()
+{
+	return s_handheldConfigActive;
+}
+
+void resetHandheldVirtualMousePos()
+{
+	s_virtMousePos = ImVec2(-1.0f, -1.0f);
+	s_virtMouseActiveTimer = 0.0f;
+}
+
+const char* handheldConfigNavHelpText()
+{
+	return
+		"Tabs (left): D-Pad or left stick to move, A to open a section.\n"
+		"Settings (right): D-Pad or left stick to move, A to toggle or activate.\n"
+		"Right stick moves the on-screen pointer (use for small checkboxes and sliders).\n"
+		"L1 or D-Pad Left: tabs list  |  R1 or D-Pad Right: settings panel.\n"
+		"B, Guide, or L1+L2+R1+R2: close this menu.";
 }
 
 void focusWindowByName(const char* name)
@@ -94,6 +246,23 @@ void focusWindowByName(const char* name)
 	}
 }
 
+static bool s_focusConfigSidebar = false;
+
+void requestHandheldConfigSidebarFocus()
+{
+	s_focusConfigSidebar = true;
+}
+
+bool consumeHandheldConfigSidebarFocus()
+{
+	if (!s_focusConfigSidebar)
+	{
+		return false;
+	}
+	s_focusConfigSidebar = false;
+	return true;
+}
+
 void handleHandheldConfigWindowFocus()
 {
 	if (!isHandheld())
@@ -101,24 +270,22 @@ void handleHandheldConfigWindowFocus()
 		return;
 	}
 
-	if (buttonPressed(CONTROLLER_BUTTON_LEFTSHOULDER))
+	if (buttonPressed(CONTROLLER_BUTTON_LEFTSHOULDER) || buttonPressed(CONTROLLER_BUTTON_DPAD_LEFT))
 	{
 		focusWindowByName("##Sidebar");
+		resetHandheldVirtualMousePos();
 	}
-	else if (buttonPressed(CONTROLLER_BUTTON_RIGHTSHOULDER))
+	else if (buttonPressed(CONTROLLER_BUTTON_RIGHTSHOULDER) || buttonPressed(CONTROLLER_BUTTON_DPAD_RIGHT))
 	{
 		focusWindowByName("##Settings");
+		resetHandheldVirtualMousePos();
 	}
 }
 
 bool init(void* window, void* context, s32 uiScale)
 {
 #if defined(TFE_RUNTIME_GL)
-	// ImGui ships GLES sources for #version 300 es only (320 es needs precision in its desktop fallbacks).
-	if (isHandheld() || tfe_UseGLES())
-		glsl_version = "#version 300 es\n";
-	else
-		glsl_version = (strcmp(SDL_GetPlatform(), "Mac OS X") == 0 ? "#version 410\n" : "#version 130\n");
+	glsl_version = tfe_GetGLSLVersionString();
 #else
 	glsl_version = strcmp(SDL_GetPlatform(), "Mac OS X") == 0 ? "#version 410" : "#version 130";
 #endif
@@ -133,8 +300,14 @@ bool init(void* window, void* context, s32 uiScale)
 	if (handheld)
 	{
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard;
+		io.MouseDrawCursor = false;
 		ImGuiStyle& style = ImGui::GetStyle();
+		const f32 scale = f32(uiScale) / 100.0f;
 		style.Colors[ImGuiCol_NavHighlight] = ImVec4(1.0f, 0.85f, 0.2f, 1.0f);
+		style.FramePadding = ImVec2(10.0f * scale, 8.0f * scale);
+		style.ItemSpacing = ImVec2(10.0f * scale, 8.0f * scale);
+		style.ScrollbarSize = 22.0f * scale;
+		style.GrabMinSize = 18.0f * scale;
 	}
 	else
 	{
@@ -193,6 +366,11 @@ bool init(void* window, void* context, s32 uiScale)
 
 void shutdown()
 {
+	if (s_handheldConfigActive)
+	{
+		setHandheldConfigMenuActive(false);
+	}
+
 	TFE_Markdown::shutdown();
 
 	ImGui_ImplOpenGL3_Shutdown();
@@ -221,6 +399,7 @@ void begin()
 	ImGui_ImplOpenGL3_NewFrame();
 	ImGui_ImplSDL2_NewFrame();
 	feedHandheldGamepad();
+	feedHandheldVirtualMouse();
 	ImGui::NewFrame();
 	s_guiFrameActive = true; // No way to check if we're inside a frame using ImGui's APIs?
 }

@@ -50,6 +50,9 @@ namespace TFE_Input
 	void getMouseWheel(s32* dx, s32* dy);
 	bool buttonDown(Button button);
 	bool buttonPressed(Button button);
+	void clearControllerButton(Button button);
+	void armBindingCapture();
+	bool isBindingCaptureReady();
 	bool keyDown(KeyboardCode key);
 	bool keyPressed(KeyboardCode key);
 	bool keyPressedWithRepeat(KeyboardCode key);

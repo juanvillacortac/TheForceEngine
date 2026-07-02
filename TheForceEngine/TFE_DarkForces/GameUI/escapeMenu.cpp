@@ -15,6 +15,7 @@
 #include <TFE_Input/inputMapping.h>
 #include <TFE_RenderBackend/renderBackend.h>
 #include <TFE_DarkForces/mission.h>
+#include <TFE_Jedi/Renderer/virtualFramebuffer.h>
 #include <TFE_RenderShared/texturePacker.h>
 #include <TFE_Jedi/Renderer/RClassic_GPU/screenDrawGPU.h>
 #include <TFE_Jedi/Renderer/jediRenderer.h>
@@ -270,6 +271,23 @@ namespace TFE_DarkForces
 		s_emState.buttonPressed = -1;
 		s_emState.buttonHover = false;
 		s_emState.confirmState = CONFIRM_STATE_NONE;
+
+		// Present + draw on the open frame — otherwise the first 1–2 frames use
+		// ASPECT_CORRECT (pillarbox) before escapeMenu_update sets STRETCH.
+		if (s_escLpalette)
+		{
+			lpalette_setScreenPal(s_escLpalette);
+		}
+		s_emState.framebuffer = vfb_getCpuBuffer();
+
+		u32 dispWidth = 0;
+		u32 dispHeight = 0;
+		vfb_getResolution(&dispWidth, &dispHeight);
+		if (vfb_useSquareHandheldPanel() && (dispWidth > 320 || dispHeight > 200))
+		{
+			vfb_setClassicUiLetterboxedPresent(true);
+		}
+		escapeMenu_draw(JTRUE, JTRUE);
 	}
 
 	void escapeMenu_resetLevel()
@@ -322,9 +340,11 @@ namespace TFE_DarkForces
 		u32 dispWidth, dispHeight;
 		vfb_getResolution(&dispWidth, &dispHeight);
 
-		const fixed16_16 xScale = vfb_getXScale();
-		const fixed16_16 yScale = vfb_getYScale();
-		const s32 xOffset = vfb_getWidescreenOffset();
+		s32 uiXOffset = 0;
+		s32 uiYOffset = 0;
+		fixed16_16 uiXScale = ONE_16;
+		fixed16_16 uiYScale = ONE_16;
+		menu_getClassicUiBlitTransform(&uiXOffset, &uiYOffset, &uiXScale, &uiYScale);
 
 		// Draw the background — the captured RT matches game resolution; use full UVs.
 		if (drawBackground)
@@ -332,64 +352,74 @@ namespace TFE_DarkForces
 			screenGPU_addImageQuad(0, 0, dispWidth, dispHeight, (TextureGpu*)TFE_RenderBackend::getRenderTargetTexture(s_emState.renderTarget));
 		}
 
-		// Draw the menu.
+		const fixed16_16 menuX = intToFixed16(uiXOffset);
+		const fixed16_16 menuY = intToFixed16(uiYOffset);
+
+		// Draw the menu overlay in the handheld 4:3 zone (background stays full-frame).
 		if (s_emState.confirmState == CONFIRM_STATE_NONE)
 		{
-			screenGPU_blitTextureScaled(&s_emState.escMenuFrames[0].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.escMenuFrames[0].texture, nullptr, menuX, menuY, uiXScale, uiYScale, 31);
 
 			const s32 highlight = escMenu_getHighlightButton();
 			if (s_levelComplete)
 			{
-				// Attempt to clean up the button positions, note this is only a problem at non-vanilla resolutions.
-				fixed16_16 yOffset = (dispHeight == 200 || dispHeight == 400) ? 0 : round16(yScale / 2);
+				fixed16_16 yOffset = menuY;
+				if (dispHeight != 200 && dispHeight != 400)
+				{
+					yOffset = menuY + round16(uiYScale / 2);
+				}
 
 				if (highlight == ESC_BTN_ABORT)
 				{
-					screenGPU_blitTextureScaled(&s_emState.escMenuFrames[3].texture, nullptr, intToFixed16(xOffset), yOffset, xScale, yScale, 31);
+					screenGPU_blitTextureScaled(&s_emState.escMenuFrames[3].texture, nullptr, menuX, yOffset, uiXScale, uiYScale, 31);
 				}
 				else
 				{
-					screenGPU_blitTextureScaled(&s_emState.escMenuFrames[4].texture, nullptr, intToFixed16(xOffset), yOffset, xScale, yScale, 31);
+					screenGPU_blitTextureScaled(&s_emState.escMenuFrames[4].texture, nullptr, menuX, yOffset, uiXScale, uiYScale, 31);
 				}
 			}
 			if ((highlight > ESC_BTN_ABORT || (highlight == ESC_BTN_ABORT && !s_levelComplete)) && highlight >= 0)
 			{
-				// Attempt to clean up the button positions, note this is only a problem at non-vanilla resolutions.
-				fixed16_16 yOffset = (dispHeight == 200 || dispHeight == 400) ? 0 : round16(yScale / 2);
-				yOffset = min(yOffset, 3 - highlight);
+				fixed16_16 yOffset = menuY;
+				if (dispHeight != 200 && dispHeight != 400)
+				{
+					yOffset = menuY + round16(uiYScale / 2);
+					yOffset = min(yOffset, menuY + intToFixed16(3 - highlight));
+				}
 
-				// Draw the highlight button
 				const s32 highlightIndices[] = { 1, 7, 9, 5 };
-				screenGPU_blitTextureScaled(&s_emState.escMenuFrames[highlightIndices[highlight]].texture, nullptr, intToFixed16(xOffset), yOffset, xScale, yScale, 31);
+				screenGPU_blitTextureScaled(&s_emState.escMenuFrames[highlightIndices[highlight]].texture, nullptr, menuX, yOffset, uiXScale, uiYScale, 31);
 			}
 		}
-		// Confirmation.
 		else if (s_emState.confirmState == CONFIRM_STATE_ABORT)
 		{
 			const s32 highlight = escMenu_getHighlightButton();
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[CONFIRM_ABORT_BG].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[CONFIRM_ABORT_BG].texture, nullptr, menuX, menuY, uiXScale, uiYScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP].texture, nullptr, menuX, menuY, uiXScale, uiYScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP].texture, nullptr, menuX, menuY, uiXScale, uiYScale, 31);
 		}
 		else if (s_emState.confirmState == CONFIRM_STATE_NEXT)
 		{
 			const s32 highlight = escMenu_getHighlightButton();
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[CONFIRM_NEXT_BG].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[CONFIRM_NEXT_BG].texture, nullptr, menuX, menuY, uiXScale, uiYScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP].texture, nullptr, menuX, menuY, uiXScale, uiYScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP].texture, nullptr, menuX, menuY, uiXScale, uiYScale, 31);
 		}
 		else if (s_emState.confirmState == CONFIRM_STATE_QUIT)
 		{
 			const s32 highlight = escMenu_getHighlightButton();
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[CONFIRM_QUIT_BG].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_QUIT_YESBTN_DOWN : CONFIRM_QUIT_YESBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
-			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_QUIT_NOBTN_DOWN : CONFIRM_QUIT_NOBTN_UP].texture, nullptr, intToFixed16(xOffset), 0, xScale, yScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[CONFIRM_QUIT_BG].texture, nullptr, menuX, menuY, uiXScale, uiYScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_QUIT_YESBTN_DOWN : CONFIRM_QUIT_YESBTN_UP].texture, nullptr, menuX, menuY, uiXScale, uiYScale, 31);
+			screenGPU_blitTextureScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_QUIT_NOBTN_DOWN : CONFIRM_QUIT_NOBTN_UP].texture, nullptr, menuX, menuY, uiXScale, uiYScale, 31);
 		}
 
-		// Draw the mouse.
 		if (drawMouse && menu_shouldDrawCursor())
 		{
-			screenGPU_blitTextureScaled(&s_cursor.texture, nullptr, intToFixed16(s_emState.cursorPos.x), intToFixed16(s_emState.cursorPos.z), xScale, yScale, 31);
+			s32 cx = s_emState.cursorPos.x;
+			s32 cy = s_emState.cursorPos.z;
+			cx = s32(floor16(mul16(intToFixed16(cx), uiXScale)) + uiXOffset);
+			cy = s32(floor16(mul16(intToFixed16(cy), uiYScale)) + uiYOffset);
+			screenGPU_blitTextureScaled(&s_cursor.texture, nullptr, intToFixed16(cx), intToFixed16(cy), uiXScale, uiYScale, 31);
 		}
 	}
 
@@ -469,9 +499,11 @@ namespace TFE_DarkForces
 		}
 		else
 		{
-			const fixed16_16 xScale = vfb_getXScale();
-			const fixed16_16 yScale = vfb_getYScale();
-			const s32 xOffset = vfb_getWidescreenOffset();
+			s32 uiXOffset = 0;
+			s32 uiYOffset = 0;
+			fixed16_16 uiXScale = ONE_16;
+			fixed16_16 uiYScale = ONE_16;
+			menu_getClassicUiBlitTransform(&uiXOffset, &uiYOffset, &uiXScale, &uiYScale);
 
 			if (drawBackground)
 			{
@@ -480,62 +512,64 @@ namespace TFE_DarkForces
 
 			if (s_emState.confirmState == CONFIRM_STATE_NONE)
 			{
-				// Draw the menu background.
-				blitDeltaFrameScaled(&s_emState.escMenuFrames[0], xOffset, 0, xScale, yScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.escMenuFrames[0], uiXOffset, uiYOffset, uiXScale, uiYScale, s_emState.framebuffer);
 
 				const s32 highlight = escMenu_getHighlightButton();
 				if (s_levelComplete)
 				{
-					// Attempt to clean up the button positions, note this is only a problem at non-vanilla resolutions.
-					fixed16_16 yOffset = (dispHeight == 200 || dispHeight == 400) ? 0 : round16(yScale / 2);
+					s32 yOffset = uiYOffset;
+					if (dispHeight != 200 && dispHeight != 400)
+					{
+						yOffset = uiYOffset + round16(uiYScale / 2);
+					}
 
 					if (highlight == ESC_BTN_ABORT)
 					{
-						blitDeltaFrameScaled(&s_emState.escMenuFrames[3], xOffset, yOffset, xScale, yScale, s_emState.framebuffer);
+						blitDeltaFrameScaled(&s_emState.escMenuFrames[3], uiXOffset, yOffset, uiXScale, uiYScale, s_emState.framebuffer);
 					}
 					else
 					{
-						blitDeltaFrameScaled(&s_emState.escMenuFrames[4], xOffset, yOffset, xScale, yScale, s_emState.framebuffer);
+						blitDeltaFrameScaled(&s_emState.escMenuFrames[4], uiXOffset, yOffset, uiXScale, uiYScale, s_emState.framebuffer);
 					}
 				}
 				if ((highlight > ESC_BTN_ABORT || (highlight == ESC_BTN_ABORT && !s_levelComplete)) && highlight >= 0)
 				{
-					// Attempt to clean up the button positions, note this is only a problem at non-vanilla resolutions.
-					fixed16_16 yOffset = (dispHeight == 200 || dispHeight == 400) ? 0 : round16(yScale / 2);
-					yOffset = min(yOffset, 3 - highlight);
+					s32 yOffset = uiYOffset;
+					if (dispHeight != 200 && dispHeight != 400)
+					{
+						yOffset = uiYOffset + round16(uiYScale / 2);
+						yOffset = min(yOffset, uiYOffset + 3 - highlight);
+					}
 
-					// Draw the highlight button
 					const s32 highlightIndices[] = { 1, 7, 9, 5 };
-					blitDeltaFrameScaled(&s_emState.escMenuFrames[highlightIndices[highlight]], xOffset, yOffset, xScale, yScale, s_emState.framebuffer);
+					blitDeltaFrameScaled(&s_emState.escMenuFrames[highlightIndices[highlight]], uiXOffset, yOffset, uiXScale, uiYScale, s_emState.framebuffer);
 				}
 			}
-			// Confirmation.
 			else if (s_emState.confirmState == CONFIRM_STATE_ABORT)
 			{
 				const s32 highlight = escMenu_getHighlightButton();
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[CONFIRM_ABORT_BG], xOffset, 0, xScale, yScale, s_emState.framebuffer);
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[CONFIRM_ABORT_BG], uiXOffset, uiYOffset, uiXScale, uiYScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP], uiXOffset, uiYOffset, uiXScale, uiYScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP], uiXOffset, uiYOffset, uiXScale, uiYScale, s_emState.framebuffer);
 			}
 			else if (s_emState.confirmState == CONFIRM_STATE_NEXT)
 			{
 				const s32 highlight = escMenu_getHighlightButton();
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[CONFIRM_NEXT_BG], xOffset, 0, xScale, yScale, s_emState.framebuffer);
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[CONFIRM_NEXT_BG], uiXOffset, uiYOffset, uiXScale, uiYScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_NEXT_YESBTN_DOWN : CONFIRM_NEXT_YESBTN_UP], uiXOffset, uiYOffset, uiXScale, uiYScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_NEXT_NOBTN_DOWN : CONFIRM_NEXT_NOBTN_UP], uiXOffset, uiYOffset, uiXScale, uiYScale, s_emState.framebuffer);
 			}
 			else if (s_emState.confirmState == CONFIRM_STATE_QUIT)
 			{
 				const s32 highlight = escMenu_getHighlightButton();
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[CONFIRM_QUIT_BG], xOffset, 0, xScale, yScale, s_emState.framebuffer);
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_QUIT_YESBTN_DOWN : CONFIRM_QUIT_YESBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
-				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_QUIT_NOBTN_DOWN : CONFIRM_QUIT_NOBTN_UP], xOffset, 0, xScale, yScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[CONFIRM_QUIT_BG], uiXOffset, uiYOffset, uiXScale, uiYScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_YES ? CONFIRM_QUIT_YESBTN_DOWN : CONFIRM_QUIT_YESBTN_UP], uiXOffset, uiYOffset, uiXScale, uiYScale, s_emState.framebuffer);
+				blitDeltaFrameScaled(&s_emState.confirmMenuFrames[highlight == CONFIRM_NO ? CONFIRM_QUIT_NOBTN_DOWN : CONFIRM_QUIT_NOBTN_UP], uiXOffset, uiYOffset, uiXScale, uiYScale, s_emState.framebuffer);
 			}
 
-			// Draw the mouse.
 			if (drawMouse && menu_shouldDrawCursor())
 			{
-				blitDeltaFrameScaled(&s_cursor, s_emState.cursorPos.x, s_emState.cursorPos.z, xScale, yScale, s_emState.framebuffer);
+				menu_blitCursorScaled(s16(s_emState.cursorPos.x), s16(s_emState.cursorPos.z), s_emState.framebuffer);
 			}
 		}
 	}
@@ -565,6 +599,14 @@ namespace TFE_DarkForces
 		}
 
 		escapeMenu_draw(JTRUE, JTRUE);
+
+		u32 dispWidth = 0;
+		u32 dispHeight = 0;
+		vfb_getResolution(&dispWidth, &dispHeight);
+		if (vfb_useSquareHandheldPanel() && (dispWidth > 320 || dispHeight > 200))
+		{
+			vfb_setClassicUiLetterboxedPresent(true);
+		}
 		return action;
 	}
 

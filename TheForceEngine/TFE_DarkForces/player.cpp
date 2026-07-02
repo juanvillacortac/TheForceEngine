@@ -910,6 +910,7 @@ namespace TFE_DarkForces
 		s_playerPrimaryFire = JFALSE;
 		s_playerSecFire     = JFALSE;
 		s_playerJumping     = JFALSE;
+		s_onFloor           = JFALSE;
 		s_disablePlayerMovement = JFALSE;
 		s_disablePlayerRotation = JFALSE;
 		s_disablePlayerFire     = JFALSE;
@@ -1038,6 +1039,9 @@ namespace TFE_DarkForces
 
 		s_playerYPos = s_playerObject->posWS.y;
 		s_playerLogic.stepHeight = PLAYER_STEP;
+		s_onFloor = JFALSE;
+		s_playerUpVel = 0;
+		s_playerUpVel2 = 0;
 
 		task_makeActive(s_playerTask);
 
@@ -1719,6 +1723,19 @@ namespace TFE_DarkForces
 	///////////////////////////////////////////
 	// Internal Implentation
 	///////////////////////////////////////////
+	static JBool player_horizMoveUsesRunSpeed()
+	{
+		return s_playerRun || (inputMapping_isHandheldNoSticks() ? JTRUE : JFALSE);
+	}
+
+	static void player_applyHorizRunBoost(fixed16_16* delta)
+	{
+		if (player_horizMoveUsesRunSpeed())
+		{
+			*delta <<= 1;
+		}
+	}
+
 	void setPlayerLight(s32 atten)
 	{
 		s_playerLight = atten;
@@ -1885,7 +1902,7 @@ namespace TFE_DarkForces
 			{
 				fixed16_16 turnSpeed = PLAYER_KB_TURN_SPD;	// angle units per second.
 				fixed16_16 dYaw = mul16(turnSpeed, s_deltaTime);
-				dYaw <<= s_playerRun;		// double for "run"
+				player_applyHorizRunBoost(&dYaw);
 				dYaw >>= s_playerSlow;		// half for "slow"
 
 				s_playerYaw -= dYaw;
@@ -1895,7 +1912,7 @@ namespace TFE_DarkForces
 			{
 				fixed16_16 turnSpeed = PLAYER_KB_TURN_SPD;	// angle units per second.
 				fixed16_16 dYaw = mul16(turnSpeed, s_deltaTime);
-				dYaw <<= s_playerRun;		// double for "run"
+				player_applyHorizRunBoost(&dYaw);
 				dYaw >>= s_playerSlow;		// half for "slow"
 
 				s_playerYaw += dYaw;
@@ -1904,6 +1921,10 @@ namespace TFE_DarkForces
 			else if (inputMapping_getAnalogAxis(AA_LOOK_HORZ) && !s_disablePlayerRotation)
 			{
 				fixed16_16 turnSpeed = mul16(mul16(PLAYER_CONTROLLER_TURN_SPD, s_deltaTime), floatToFixed16(inputMapping_getAnalogAxis(AA_LOOK_HORZ)));
+				if (inputMapping_isHandheldNoSticks())
+				{
+					player_applyHorizRunBoost(&turnSpeed);
+				}
 				s_playerYaw += turnSpeed;
 				s_playerYaw &= ANGLE_MASK;
 			}
@@ -1964,18 +1985,32 @@ namespace TFE_DarkForces
 			}
 		}
 
-		if (inputMapping_getActionState(IADF_USE))
+		const ActionState useState = inputMapping_getActionState(IADF_USE);
+		const ActionState primaryState = inputMapping_getActionState(IADF_PRIMARY_FIRE);
+		const ActionState secondaryState = inputMapping_getActionState(IADF_SECONDARY_FIRE);
+		const bool useActive = (useState & STATE_ACTIVE) != 0;
+		const bool primaryActive = (primaryState & STATE_ACTIVE) != 0;
+		const bool chordSecFire = inputMapping_isHandheld() && useActive && primaryActive;
+
+		if (useActive && !chordSecFire)
 		{
 			s_playerUse = JTRUE;
 		}
 
-		if (inputMapping_getActionState(IADF_PRIMARY_FIRE) && !s_disablePlayerFire)
+		if (!s_disablePlayerFire)
 		{
-			s_playerPrimaryFire = JTRUE;
-		}
-		else if (inputMapping_getActionState(IADF_SECONDARY_FIRE) && !s_disablePlayerFire)
-		{
-			s_playerSecFire = JTRUE;
+			if (chordSecFire)
+			{
+				s_playerSecFire = JTRUE;
+			}
+			else if (primaryActive)
+			{
+				s_playerPrimaryFire = JTRUE;
+			}
+			else if (secondaryState & STATE_ACTIVE)
+			{
+				s_playerSecFire = JTRUE;
+			}
 		}
 
 		// Reduce the players ability to adjust the velocity while they have vertical velocity.
@@ -2000,7 +2035,10 @@ namespace TFE_DarkForces
 
 	fixed16_16 adjustStrafeSpeed(fixed16_16 spd)
 	{
-		spd <<= s_playerRun;
+		if (player_horizMoveUsesRunSpeed())
+		{
+			spd <<= 1;
+		}
 		spd >>= s_playerSlow;
 		spd >>= s_onMovingSurface;	// slows down the player movement on a moving surface.
 		return spd;

@@ -1,6 +1,7 @@
 #include "lcanvas.h"
 #include "lfade.h"
 #include "ldraw.h"
+#include <TFE_DarkForces/GameUI/menu.h>
 #include <TFE_System/system.h>
 #include <TFE_Jedi/Math/core_math.h>
 #include <TFE_Jedi/Renderer/virtualFramebuffer.h>
@@ -98,12 +99,8 @@ namespace TFE_DarkForces
 
 	void lcanvas_showNextFrame()
 	{
-		LRect bounds;
-		lcanvas_getBounds(&bounds);
-		s32 width  = bounds.right - bounds.left;
-		s32 height = bounds.bottom - bounds.top;
-
-		memcpy(vfb_getCpuBuffer(), ldraw_getBitmap(), width * height);
+		menu_blitToScreen(ldraw_getBitmap(), JFALSE, JFALSE);
+		vfb_setStretchGameplayPresent(false);
 		vfb_swap();
 	}
 

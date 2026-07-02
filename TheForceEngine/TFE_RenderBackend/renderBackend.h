@@ -113,10 +113,14 @@ namespace TFE_RenderBackend
 	void clearWindow();
 
 	void getDisplayInfo(DisplayInfo* displayInfo);
+	void getReferenceDisplaySize(s32* width, s32* height);
+	bool isSquareDisplayAspect(s32 width, s32 height);
+	void computeRenderResolution(s32 gameWidth, s32 gameHeight, bool widescreen, s32* outWidth, s32* outHeight);
 	void updateSettings();
 
 	// virtual display
 	bool createVirtualDisplay(const VirtualDisplayInfo& vdispInfo);
+	void setVirtualDisplayOutputMode(DisplayMode mode);
 	void updateVirtualDisplay(const void* buffer, size_t size);
 	void bindVirtualDisplay();
 	void copyToVirtualDisplay(RenderTargetHandle src);

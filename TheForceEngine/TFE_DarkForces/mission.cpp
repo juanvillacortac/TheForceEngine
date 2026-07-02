@@ -218,26 +218,28 @@ namespace TFE_DarkForces
 		s_framebuffer = vfb_getCpuBuffer();
 	}
 
+	static void mission_setGameplayPresentMode()
+	{
+		u32 width = 0;
+		u32 height = 0;
+		vfb_getResolution(&width, &height);
+		if (vfb_useSquareHandheldPanel() && (width > 320 || height > 200))
+		{
+			vfb_setStretchGameplayPresent(true);
+		}
+	}
+
 	void mission_createRenderDisplay()
 	{
 		TFE_Settings_Graphics* graphics = TFE_Settings::getGraphicsSettings();
-		DisplayInfo info;
-		TFE_RenderBackend::getDisplayInfo(&info);
 
 		s32 adjustedWidth = graphics->gameResolution.x;
-		if (graphics->widescreen && (graphics->gameResolution.z == 200 || graphics->gameResolution.z == 400))
-		{
-			adjustedWidth = (graphics->gameResolution.z * info.width / info.height) * 12 / 10;
-		}
-		else if (graphics->widescreen)
-		{
-			adjustedWidth = graphics->gameResolution.z * info.width / info.height;
-		}
-		// Make sure the adjustedWidth is divisible by 4.
-		adjustedWidth = 4*((adjustedWidth + 3) >> 2);
+		s32 adjustedHeight = graphics->gameResolution.z;
+		TFE_RenderBackend::computeRenderResolution(adjustedWidth, adjustedHeight, graphics->widescreen != 0, &adjustedWidth, &adjustedHeight);
 
-		vfb_setResolution(adjustedWidth, graphics->gameResolution.z);
+		vfb_setResolution(adjustedWidth, adjustedHeight);
 		s_framebuffer = vfb_getCpuBuffer();
+		mission_setGameplayPresentMode();
 
 		// Copy the level palette...
 		// Update the palette.
@@ -288,6 +290,22 @@ namespace TFE_DarkForces
 		s_loadingPresentationActive = JFALSE;
 	}
 
+	// INF elevators and other tick-driven level logic use s_curTick. Freeze it while
+	// the level is still loading (GPU pack can take many seconds) so setups like
+	// SECBASE's drop cage don't finish during the loading screen.
+	static void mission_freezeLevelTime()
+	{
+		time_pause(JTRUE);
+	}
+
+	static void mission_unfreezeLevelTime()
+	{
+		time_pause(JFALSE);
+		// Avoid a stale tick delta on the first gameplay frame after a long frozen load.
+		s_prevTick = s_curTick;
+		s_prevTickFract = s_curTickFract;
+	}
+
 	static void mission_applyLevelPalette()
 	{
 		setPalette(s_basePalette);
@@ -295,15 +313,30 @@ namespace TFE_DarkForces
 		s_palModified = JFALSE;
 	}
 
+	void mission_markHudPaletteDirty()
+	{
+		s_updateHudColors = JTRUE;
+	}
+
+	static void mission_presentFrame(bool stretchGameplay)
+	{
+		vfb_setStretchGameplayPresent(stretchGameplay);
+		vfb_swap();
+	}
+
 	static void mission_suppressGpuPresent()
 	{
 		if (TFE_Settings::getGraphicsSettings()->rendererIndex != RENDERER_HARDWARE) { return; }
+		// On square handheld the loading-screen hold uses ASPECT_CORRECT and causes a
+		// pillarbox flash before gameplay STRETCH — skip; vfb_forceToBlack already cleared RT.
+		if (vfb_useSquareHandheldPanel()) { return; }
 
 		vfb_setMode(VFB_TEXTURE);
 		TFE_Jedi::render_setResolution(true);
 		s_framebuffer = vfb_getCpuBuffer();
 		blitLoadingScreen();
 		setPalette(s_loadingScreenPal);
+		vfb_setStretchGameplayPresent(false);
 		vfb_swap();
 		vfb_swap();
 		s_gpuPresentSuppressed = JTRUE;
@@ -320,17 +353,18 @@ namespace TFE_DarkForces
 		TFE_Jedi::render_setResolution(true);
 		s_gpuPresentSuppressed = JFALSE;
 		mission_applyLevelPalette();
+		mission_setGameplayPresentMode();
 	}
 
 	static void mission_beginGameplayPresentation()
 	{
 		mission_endLoadingPresentation();
+		mission_setGameplayPresentMode();
 		if (TFE_Settings::getGraphicsSettings()->rendererIndex == RENDERER_HARDWARE)
 		{
 			// Draw the first gameplay frame off-screen, then reveal on the next frame.
 			s_gpuWarmupFrame = JTRUE;
 			s_syncLevelPalette = JTRUE;
-			displayLoadingScreen();
 		}
 		else
 		{
@@ -345,6 +379,9 @@ namespace TFE_DarkForces
 		TFE_Jedi::renderer_prepareLevel();
 		mission_beginGameplayPresentation();
 		s_missionMode = MISSION_MODE_MAIN;
+		TFE_Jedi::inf_finishLevelLoad(JFALSE);
+		mission_unfreezeLevelTime();
+		TFE_Jedi::inf_beginGameplay(JFALSE);
 		mission_applyLevelPalette();
 		reticle_enable(true);
 	}
@@ -378,6 +415,7 @@ namespace TFE_DarkForces
 		s_framebuffer = vfb_getCpuBuffer();
 		blitLoadingScreen();
 		setPalette(s_loadingScreenPal);
+		vfb_setStretchGameplayPresent(false);
 		vfb_swap();
 		vfb_swap();
 
@@ -511,6 +549,7 @@ namespace TFE_DarkForces
 			// Make sure the loading screen is displayed for at least 1 second.
 			if (!s_loadingFromSave)
 			{
+				// Yield uses s_curTick + delay — time must run for MIN_LOAD_TIME to elapse.
 				time_pause(JFALSE);
 				mission_createDisplay();
 				displayLoadingScreen();
@@ -528,6 +567,8 @@ namespace TFE_DarkForces
 			if (!s_loadingFromSave)
 			{
 				s_missionMode = MISSION_MODE_LOAD_START;
+				// Freeze ticks only while level data loads — INF elevators advance with s_curTick.
+				mission_freezeLevelTime();
 				mission_setupTasks();
 				displayLoadingScreen();
 
@@ -537,6 +578,7 @@ namespace TFE_DarkForces
 				{
 					const char* levelName = agent_getLevelName();
 					// For now always load medium difficulty since it cannot be selected.
+					TFE_Jedi::inf_beginLevelLoad();
 					if (level_load(levelName, s_agentData[s_agentId].difficulty))
 					{
 						setScreenBrightness(ONE_16);
@@ -554,11 +596,20 @@ namespace TFE_DarkForces
 						TFE_Jedi::renderer_prepareLevel();
 						mission_beginGameplayPresentation();
 						s_missionMode = MISSION_MODE_MAIN;
+						TFE_Jedi::inf_finishLevelLoad(JTRUE);
+						mission_unfreezeLevelTime();
+						TFE_Jedi::inf_beginGameplay(JTRUE);
 						mission_applyLevelPalette();
 						s_gamePaused = JFALSE;
 						hud_startup(JFALSE);
 
 						reticle_enable(true);
+					}
+					else
+					{
+						TFE_Jedi::inf_finishLevelLoad(JFALSE);
+						mission_unfreezeLevelTime();
+						TFE_Jedi::inf_beginGameplay(JFALSE);
 					}
 					s_flatLighting = JFALSE;
 					// Note: I am not sure why this is there but it overrides all player settings
@@ -568,7 +619,8 @@ namespace TFE_DarkForces
 			}
 			else // Loading from save.
 			{
-				time_pause(JFALSE);
+				mission_freezeLevelTime();
+				TFE_Jedi::inf_beginLevelLoad();
 				mission_createDisplay();
 				displayLoadingScreen();
 				s_missionMode = MISSION_MODE_LOAD_START;
@@ -678,7 +730,7 @@ namespace TFE_DarkForces
 			automap_resetScale();
 
 			TFE_Jedi::endRender();
-			vfb_swap();
+			mission_presentFrame(true);
 		}
 	}
 				
@@ -843,11 +895,23 @@ namespace TFE_DarkForces
 				s_levelPaletteRevealFrames--;
 			}
 			TFE_Jedi::endRender();
-			vfb_swap();
 			if (s_gpuWarmupFrame)
 			{
-				mission_suppressGpuPresent();
+				if (vfb_useSquareHandheldPanel())
+				{
+					mission_presentFrame(!escapeMenu_isOpen() && !pda_isOpen()
+						&& s_missionMode == MISSION_MODE_MAIN);
+				}
+				else
+				{
+					mission_suppressGpuPresent();
+				}
 				s_gpuWarmupFrame = JFALSE;
+			}
+			else
+			{
+				mission_presentFrame(!escapeMenu_isOpen() && !pda_isOpen()
+					&& s_missionMode == MISSION_MODE_MAIN);
 			}
 
 			// Pump tasks and look for any with a different ID.
@@ -930,6 +994,7 @@ namespace TFE_DarkForces
 		// This hackery basically removes that latency so the image is properly displayed immediately.
 		setPalette(s_loadingScreenPal);
 		setPalette(s_loadingScreenPal);
+		vfb_setStretchGameplayPresent(false);
 		vfb_swap();
 		vfb_swap();
 	}

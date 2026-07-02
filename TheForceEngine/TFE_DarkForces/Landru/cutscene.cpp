@@ -2,6 +2,7 @@
 #include "cutscene_player.h"
 #include "lsystem.h"
 #include "lcanvas.h"
+#include <TFE_DarkForces/GameUI/menu.h>
 #include <TFE_Game/igame.h>
 #include <TFE_System/system.h>
 #include <TFE_Audio/audioSystem.h>
@@ -47,9 +48,18 @@ namespace TFE_DarkForces
 			}
 		}
 		if (!found) return JFALSE;
+
+		u32 panelWidth = 0;
+		u32 panelHeight = 0;
+		const bool restorePanel = menu_saveHandheldPanelVfb(&panelWidth, &panelHeight);
+
 		// Re-initialize the canvas, so cutscenes run at the correct resolution even if it was changed for gameplay
 		// (i.e. high resolution support).
 		lcanvas_init(320, 200);
+		if (restorePanel)
+		{
+			menu_applyHandheldPanelVfb(panelWidth, panelHeight);
+		}
 		
 		// The original code then starts the cutscene loop here, and then returns when done.
 		// Instead we set a bool and then the calling code will call 'update' until it returns false.

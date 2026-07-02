@@ -122,7 +122,6 @@ namespace TFE_DarkForces
 	static JBool s_screenDirtyLeft[4]  = { 0 };
 	static JBool s_screenDirtyRight[4] = { 0 };
 	static JBool s_basePaletteCopyMode = JFALSE;
-	static JBool s_updateHudColors = JFALSE;
 
 	static u8 s_tempBuffer[256 * 3];
 	static u8 s_hudPalette[HUD_COLORS_COUNT * 3 + 10];
@@ -456,7 +455,7 @@ namespace TFE_DarkForces
 
 		s_hudPaletteIndex = offset;
 		s_hudColorCount = count;
-		s_updateHudColors = JTRUE;
+		mission_markHudPaletteDirty();
 	}
 		
 	void hud_initAnimation()

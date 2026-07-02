@@ -181,6 +181,8 @@ namespace TFE_Input
 	void inputMapping_shutdown();
 	void inputMapping_resetToDefaults();
 
+	void inputMapping_applyHandheldDeadzoneDefaults(bool serializeIfChanged);
+
 	bool inputMapping_serialize();
 	bool inputMapping_restore();
 		
@@ -188,9 +190,12 @@ namespace TFE_Input
 	void inputMapping_removeBinding(u32 index);
 	bool isBindingPressed(InputAction action);
 	ActionState inputMapping_getActionState(InputAction action);
+	bool inputMapping_isHandheld();
+	bool inputMapping_isHandheldNoSticks();
 	f32  inputMapping_getAnalogAxis(AnalogAxis axis);
 	void inputMapping_updateInput();
 	void inputMapping_removeState(InputAction action);
+	void inputMapping_consumeControllerButton(Button button);
 
 	ActionState inputMapping_getAction(InputAction act);
 

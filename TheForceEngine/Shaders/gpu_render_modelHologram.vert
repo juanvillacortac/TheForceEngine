@@ -64,9 +64,9 @@ void main()
 	
 	// Write out the per-vertex uv and color.
 #ifdef OPT_TRUE_COLOR
-	int palIndex = int(vtx_color.x * 255.0 + 0.5);
+	int palIndex = TFE_FTOI(vtx_color.x * 255.0 + 0.5);
 	Frag_Color = texelFetch(BasePalette, ivec2(palIndex, 0), 0).rgb;
 #else
-	Frag_Color = int(vtx_color.x * 255.0 + 0.5);
+	Frag_Color = TFE_FTOI(vtx_color.x * 255.0 + 0.5);
 #endif
 }

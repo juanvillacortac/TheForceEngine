@@ -211,5 +211,6 @@ namespace TFE_Jedi
 		// TFE
 		fixed16_16 prevValue;
 		JBool deleted;
+		s32 initStopIndex;
 	};
 }

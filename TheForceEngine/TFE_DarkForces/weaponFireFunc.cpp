@@ -9,6 +9,7 @@
 #include <TFE_Jedi/Renderer/jediRenderer.h>
 // TFE
 #include <TFE_Settings/settings.h>
+#include <TFE_Settings/linux/tfe_gl_backend.h>
 
 namespace TFE_DarkForces
 {
@@ -2380,12 +2381,20 @@ namespace TFE_DarkForces
 		{
 			return JFALSE;
 		}
-		if (variation)
+
+		s32 aimVariation = variation;
+		if (tfe_UseHandheldNoSticks() && aimVariation > 0)
 		{
-			s32 angleVar = random(variation << 6) - (variation << 5);
+			// Stickless handheld: tighter autoaim spread (tank controls are coarser).
+			aimVariation >>= 1;
+		}
+
+		if (aimVariation)
+		{
+			s32 angleVar = random(aimVariation << 6) - (aimVariation << 5);
 			s_autoAimDirX += angleVar;
 			s_autoAimDirZ += angleVar;
-			s_weaponFirePitch += random(variation * 2) + (pitch >> 3) - variation;
+			s_weaponFirePitch += random(aimVariation * 2) + (pitch >> 3) - aimVariation;
 		}
 		sinCosFixed(s_weaponFirePitch, &s_wpnPitchSin, &s_wpnPitchCos);
 		return JTRUE;

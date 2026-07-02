@@ -26,8 +26,15 @@ namespace TFE_Ui
 {
 
 	bool isHandheld();
-	void focusWindowByName(const char* name);
+	void requestHandheldConfigSidebarFocus();
+	bool consumeHandheldConfigSidebarFocus();
 	void handleHandheldConfigWindowFocus();
+	void setHandheldConfigMenuActive(bool active);
+	bool isHandheldConfigMenuActive();
+	void resetHandheldVirtualMousePos();
+	const char* handheldConfigNavHelpText();
+	// A on focused or hovered item (after Button/Selectable); gamepad nav fallback.
+	bool handheldItemConfirm();
 
 	bool init(void* window, void* context, s32 uiScale = 100);
 	void shutdown();

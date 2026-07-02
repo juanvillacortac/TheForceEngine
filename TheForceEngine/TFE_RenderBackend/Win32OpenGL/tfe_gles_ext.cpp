@@ -51,7 +51,9 @@ static bool tfe_probe_clip_cull_shader()
 		"#extension GL_EXT_clip_cull_distance : enable\n"
 		"precision highp float;\n"
 		"void main() {\n"
-		"  gl_ClipDistance[0] = 1.0;\n"
+		"  for (int i = 0; i < 8; i++) {\n"
+		"    gl_ClipDistance[i] = 1.0;\n"
+		"  }\n"
 		"  gl_Position = vec4(0.0);\n"
 		"}\n";
 
@@ -69,6 +71,73 @@ static bool tfe_probe_clip_cull_shader()
 		GLchar log[512];
 		glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
 		TFE_System::logWrite(LOG_WARNING, "GLES", "Clip/cull distance probe failed: %s", log);
+	}
+	glDeleteShader(shader);
+	return ok != 0;
+}
+
+static bool s_bifrost_sector_shaders_ok = true;
+
+static bool tfe_probe_bifrost_sector_shader()
+{
+	if (!tfe_UseBufferTexture2D())
+	{
+		return true;
+	}
+
+	static const char* fragTest =
+		"#version 300 es\n"
+		"precision highp float;\n"
+		"#define TFE_BUFFER_TEXTURE_BYTES 1\n"
+		"#define TFE_GLES_SMOOTH_LIGHTRAMP 1\n"
+		"#define TFE_GLES_LIGHT_DITHER 1\n"
+		"uniform highp sampler2D Colormap;\n"
+		"highp int tfe_ftoi(highp float x) {\n"
+		"  if (x >= 0.0) return int(uint(floor(x + 0.0001)));\n"
+		"  return -int(uint(floor(-x + 0.0001)));\n"
+		"}\n"
+		"highp ivec2 tfe_ftoi2(highp vec2 v) {\n"
+		"  return ivec2(tfe_ftoi(v.x), tfe_ftoi(v.y));\n"
+		"}\n"
+		"float tfe_readLightRampG(int depthIndex) {\n"
+		"  return texelFetch(Colormap, ivec2(depthIndex, 0), 0).g * 255.0 / 8.23;\n"
+		"}\n"
+		"float getLightRampValue(float z, float worldAmbient) {\n"
+		"  float depthScaledF = min(z * 4.0, 127.0);\n"
+		"  float depthScaled = floor(depthScaledF);\n"
+		"  float d1 = min(127.0, depthScaled + 1.0);\n"
+		"  float blendFactor = fract(depthScaledF);\n"
+		"  float ramp0 = tfe_readLightRampG(tfe_ftoi(depthScaled));\n"
+		"  float ramp1 = tfe_readLightRampG(tfe_ftoi(d1));\n"
+		"  return 31.0 - (mix(ramp0, ramp1, blendFactor) + worldAmbient);\n"
+		"}\n"
+		"float ditherLightLevel(float light) {\n"
+		"  mat4 bayer = mat4(\n"
+		"    vec4(0.0, 12.0, 3.0, 15.0),\n"
+		"    vec4(8.0, 4.0, 11.0, 7.0),\n"
+		"    vec4(2.0, 14.0, 1.0, 13.0),\n"
+		"    vec4(10.0, 6.0, 9.0, 5.0)) / 16.0;\n"
+		"  highp ivec2 p = ivec2(tfe_ftoi(gl_FragCoord.x), tfe_ftoi(gl_FragCoord.y)) & 3;\n"
+		"  return floor(light + bayer[p.x][p.y]);\n"
+		"}\n"
+		"out vec4 Out_Color;\n"
+		"void main() { Out_Color = vec4(ditherLightLevel(getLightRampValue(1.0, 0.0))); }\n";
+
+	const GLuint shader = glCreateShader(GL_FRAGMENT_SHADER);
+	if (!shader)
+	{
+		return false;
+	}
+	glShaderSource(shader, 1, &fragTest, nullptr);
+	glCompileShader(shader);
+	GLint ok = 0;
+	glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+	if (!ok)
+	{
+		GLchar log[512];
+		glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
+		TFE_System::logWrite(LOG_WARNING, "GLES",
+			"Mali Bifrost sector shader probe failed: %s", log);
 	}
 	glDeleteShader(shader);
 	return ok != 0;
@@ -149,6 +218,16 @@ void tfe_InitGLESExtensions()
 			s_gles_major, s_gles_minor,
 			s_has_tex_buffer ? 1 : 0, s_has_frag_tex_buffer ? 1 : 0, s_has_clip_cull ? 1 : 0,
 			tfe_UseBufferTexture2D() ? 1 : 0);
+
+	if (tfe_UseBufferTexture2D())
+	{
+		s_bifrost_sector_shaders_ok = tfe_probe_bifrost_sector_shader();
+		if (!s_bifrost_sector_shaders_ok)
+		{
+			TFE_System::logWrite(LOG_WARNING, "GLES",
+				"Buffer2D sector shaders failed compile probe; GPU renderer will be unavailable.");
+		}
+	}
 }
 
 int tfe_GetGLESMajorVersion()
@@ -322,4 +401,9 @@ int tfe_GLESQueryMaxTextureBufferSize()
 int tfe_GLESUseClipDiscardFallback()
 {
 	return tfe_UseGLES() && !s_has_clip_cull;
+}
+
+int tfe_GLESBifrostSectorShadersOK()
+{
+	return s_bifrost_sector_shaders_ok ? 1 : 0;
 }
